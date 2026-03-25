@@ -160,16 +160,20 @@ func (o *Optimizer) runBenchmark() (*benchmark.Stats, error) {
 func (o *Optimizer) gatherQuickContext() string {
 	var context strings.Builder
 
-	// Get file tree (top level only)
+	// Get file tree (top level only) - truncate if too long
 	result := tools.ExecuteTool(tools.ToolUse{
 		Name:  "list_files",
 		Input: map[string]interface{}{"path": "."},
 	})
+	fileList := result.Content
+	if len(fileList) > 2000 {
+		fileList = fileList[:2000] + "\n..."
+	}
 	context.WriteString("## Project Structure\n```\n")
-	context.WriteString(result.Content)
+	context.WriteString(fileList)
 	context.WriteString("\n```\n\n")
 
-	// Grep for the URL path
+	// Grep for the URL path - limit results
 	urlPath := extractPath(o.endpoint.URL)
 	if urlPath != "" {
 		result = tools.ExecuteTool(tools.ToolUse{
@@ -180,8 +184,12 @@ func (o *Optimizer) gatherQuickContext() string {
 			},
 		})
 		if !result.IsError && result.Content != "No matches found" {
+			grepResults := result.Content
+			if len(grepResults) > 3000 {
+				grepResults = grepResults[:3000] + "\n..."
+			}
 			context.WriteString("## Route matches\n```\n")
-			context.WriteString(result.Content)
+			context.WriteString(grepResults)
 			context.WriteString("\n```\n\n")
 		}
 	}

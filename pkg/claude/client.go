@@ -116,8 +116,9 @@ func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableT
 
 	totalInputTokens := 0
 	totalOutputTokens := 0
+	maxTurns := 15 // Limit tool turns to prevent runaway context
 
-	for {
+	for turn := 0; turn < maxTurns; turn++ {
 		resp, err := c.sendRequest(systemPrompt, messages, availableTools)
 		if err != nil {
 			return err
@@ -157,10 +158,15 @@ func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableT
 		var toolResults []ContentBlock
 		for _, tu := range toolUses {
 			result := tools.ExecuteTool(tu)
+			// Truncate large tool results to prevent context overflow
+			content := result.Content
+			if len(content) > 15000 {
+				content = content[:15000] + "\n\n[TRUNCATED - content too large]"
+			}
 			toolResults = append(toolResults, ContentBlock{
 				Type:      "tool_result",
 				ToolUseID: result.ToolUseID,
-				Content:   result.Content,
+				Content:   content,
 				IsError:   result.IsError,
 			})
 		}
@@ -171,6 +177,8 @@ func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableT
 			Content: toolResults,
 		})
 	}
+	
+	return nil // Max turns reached
 }
 
 func (c *Client) sendRequest(system string, messages []Message, availableTools []tools.Tool) (*Response, error) {
