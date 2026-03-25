@@ -76,8 +76,9 @@ func (o *Optimizer) Run(maxIterations int) error {
 		// Get proposal with tool access (Claude explores as needed)
 		proposal, done, err := o.getProposalWithTools(context)
 		if err != nil {
-			fmt.Printf("Failed to get proposal: %v\n", err)
-			break
+			fmt.Printf("Failed to get proposal: %v (retrying)\n", err)
+			// Don't break - continue to next iteration
+			continue
 		}
 
 		if done {
@@ -86,8 +87,8 @@ func (o *Optimizer) Run(maxIterations int) error {
 		}
 
 		if proposal == nil {
-			fmt.Println("No proposal returned.")
-			break
+			fmt.Println("No proposal returned (retrying)")
+			continue
 		}
 
 		fmt.Printf("File: %s\n", proposal.File)
@@ -327,16 +328,18 @@ func (o *Optimizer) printSummary() {
 
 	successful := o.state.SuccessfulAttempts()
 	failed := o.state.FailedAttempts()
+	
+	fmt.Printf("\nAttempts: %d total (%d kept, %d discarded)\n", len(o.state.Attempts), len(successful), len(failed))
 
 	if len(successful) > 0 {
-		fmt.Printf("\nKept (%d):\n", len(successful))
+		fmt.Printf("\nKept:\n")
 		for _, a := range successful {
 			fmt.Printf("  ✓ %s (-%.1fms)\n", a.Change, a.P95Before-a.P95After)
 		}
 	}
 
 	if len(failed) > 0 {
-		fmt.Printf("\nDiscarded (%d):\n", len(failed))
+		fmt.Printf("\nDiscarded:\n")
 		for _, a := range failed {
 			fmt.Printf("  ✗ %s\n", a.Hypothesis)
 		}
