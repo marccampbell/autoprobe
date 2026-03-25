@@ -15,6 +15,7 @@ type Config struct {
 	Variables map[string]string         `yaml:"variables"`
 	Databases map[string]DatabaseConfig `yaml:"databases"`
 	Endpoints map[string]EndpointConfig `yaml:"endpoints"`
+	Rules     string                    `yaml:"rules"`
 }
 
 // DatabaseConfig represents a database connection

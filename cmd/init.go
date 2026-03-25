@@ -34,26 +34,32 @@ func runInit() error {
 	template := `# autoprobe configuration
 # See https://github.com/marccampbell/autoprobe for documentation
 
+# Variables for use in endpoint definitions
+# variables:
+#   base_url: http://localhost:8080
+#   api_token: ${API_TOKEN}
+
 # Database connections for query analysis (optional)
 # databases:
 #   primary:
 #     driver: postgres
 #     dsn: ${DATABASE_URL}
-#
-#   analytics:
-#     driver: postgres
-#     dsn: ${ANALYTICS_DATABASE_URL}
+
+# Rules for the AI optimizer (optional)
+# rules: |
+#   - Do not add new dependencies
+#   - Do not modify database schema
+#   - Only touch files in pkg/ and internal/
 
 # Endpoint definitions
 endpoints:
   example:
     url: http://localhost:8080/api/example
     method: GET
-    target: 200ms
+    # expect: 200
+    # target: 200ms
     # headers:
-    #   Authorization: Bearer ${API_TOKEN}
-    # body: |
-    #   {"key": "value"}
+    #   Authorization: Bearer {{api_token}}
 `
 
 	if err := os.WriteFile(configPath, []byte(template), 0644); err != nil {
