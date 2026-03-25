@@ -2,8 +2,9 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
+	"github.com/marccampbell/autoprobe/pkg/analyzer"
+	"github.com/marccampbell/autoprobe/pkg/config"
 	"github.com/spf13/cobra"
 )
 
@@ -24,7 +25,7 @@ Review with 'git diff' and commit what you want to keep.
 
 The endpoint must be defined in .autoprobe.yaml.
 
-Requires ANTHROPIC_API_KEY to be set.`,
+Requires claude cli to be installed and authenticated.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		endpointName := args[0]
@@ -48,25 +49,34 @@ func init() {
 }
 
 func runOptimize(endpointName string, maxIterations int, dryRun bool) error {
-	// Check for API key
-	if os.Getenv("ANTHROPIC_API_KEY") == "" {
-		return fmt.Errorf("ANTHROPIC_API_KEY not set. Get one at https://console.anthropic.com")
+	// Check for claude cli
+	if err := analyzer.CheckClaudeCLI(); err != nil {
+		return err
 	}
 
-	// TODO: Load config and validate endpoint exists
-	// TODO: Load database connections
-	// TODO: Run optimization loop
+	// Load config
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Get endpoint
+	endpoint, err := cfg.GetEndpoint(endpointName)
+	if err != nil {
+		return err
+	}
 
 	fmt.Printf("Optimizing endpoint: %s\n", endpointName)
+	fmt.Printf("  URL: %s %s\n", endpoint.Method, endpoint.URL)
 	if maxIterations > 0 {
 		fmt.Printf("  Max iterations: %d\n", maxIterations)
-	} else {
-		fmt.Println("  Max iterations: unlimited (until target met)")
 	}
 	if dryRun {
 		fmt.Println("  Mode: dry-run (no changes will be applied)")
 	}
+	if cfg.Rules != "" {
+		fmt.Println("  Rules: configured")
+	}
 
-	fmt.Println("\n[optimization not yet implemented]")
-	return nil
+	return analyzer.RunOptimizationLoop(cfg, endpointName, endpoint, maxIterations, dryRun)
 }
