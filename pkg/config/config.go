@@ -30,11 +30,13 @@ type DatabaseConfig struct {
 
 // EndpointConfig represents an endpoint to optimize
 type EndpointConfig struct {
-	URL     string            `yaml:"url"`
-	Method  string            `yaml:"method"`
-	Target  Duration          `yaml:"target"`
-	Headers map[string]string `yaml:"headers"`
-	Body    string            `yaml:"body"`
+	URL        string            `yaml:"url"`
+	Method     string            `yaml:"method"`
+	Target     Duration          `yaml:"target"`
+	Headers    map[string]string `yaml:"headers"`
+	Body       string            `yaml:"body"`
+	Expect     int               `yaml:"expect"`     // Expected status code (default: 2xx)
+	Requests   int               `yaml:"requests"`   // Override default request count
 }
 
 // Duration is a wrapper for time.Duration that supports YAML unmarshaling

@@ -9,12 +9,29 @@ import (
 // PrintStats outputs stats to terminal
 func PrintStats(stats *Stats) {
 	fmt.Printf("\nEndpoint: %s (%s %s)\n", stats.Endpoint, stats.Method, stats.URL)
-	fmt.Printf("Requests: %d | Errors: %d | Duration: %.1fs\n", 
-		stats.Requests, stats.Errors, stats.Duration.Seconds())
+	
+	// Build status line
+	statusLine := fmt.Sprintf("Requests: %d", stats.Requests)
+	if stats.Errors > 0 {
+		statusLine += fmt.Sprintf(" | Errors: %d", stats.Errors)
+	}
+	if stats.StatusFailures > 0 {
+		statusLine += fmt.Sprintf(" | Status failures: %d", stats.StatusFailures)
+	}
+	statusLine += fmt.Sprintf(" | Duration: %.1fs", stats.Duration.Seconds())
+	fmt.Println(statusLine)
 	
 	if stats.Requests == stats.Errors {
 		fmt.Println("\nAll requests failed!")
 		return
+	}
+	
+	if stats.StatusFailures > 0 {
+		if stats.ExpectedStatus != 0 {
+			fmt.Printf("\n⚠ Expected status %d but got failures\n", stats.ExpectedStatus)
+		} else {
+			fmt.Println("\n⚠ Some requests returned non-2xx status codes")
+		}
 	}
 
 	fmt.Println("\nLatency:")
@@ -37,13 +54,15 @@ func PrintStats(stats *Stats) {
 
 // JSONOutput is the structure for JSON output
 type JSONOutput struct {
-	Endpoint  string  `json:"endpoint"`
-	URL       string  `json:"url"`
-	Method    string  `json:"method"`
-	Requests  int     `json:"requests"`
-	Errors    int     `json:"errors"`
-	DurationS float64 `json:"duration_s"`
-	Latency   struct {
+	Endpoint       string  `json:"endpoint"`
+	URL            string  `json:"url"`
+	Method         string  `json:"method"`
+	Requests       int     `json:"requests"`
+	Errors         int     `json:"errors"`
+	StatusFailures int     `json:"status_failures"`
+	ExpectedStatus int     `json:"expected_status"`
+	DurationS      float64 `json:"duration_s"`
+	Latency        struct {
 		MinMs    float64 `json:"min_ms"`
 		MaxMs    float64 `json:"max_ms"`
 		MeanMs   float64 `json:"mean_ms"`
@@ -65,6 +84,8 @@ func WriteJSON(stats *Stats, path string) error {
 		Method:         stats.Method,
 		Requests:       stats.Requests,
 		Errors:         stats.Errors,
+		StatusFailures: stats.StatusFailures,
+		ExpectedStatus: stats.ExpectedStatus,
 		DurationS:      stats.Duration.Seconds(),
 		TargetMs:       stats.TargetMs,
 		TargetMet:      stats.TargetMet,

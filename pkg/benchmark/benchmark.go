@@ -12,30 +12,33 @@ import (
 
 // Result holds the outcome of a single request
 type Result struct {
-	StatusCode   int
-	Latency      time.Duration
-	TTFB         time.Duration
-	ResponseSize int64
-	Error        error
+	StatusCode    int
+	Latency       time.Duration
+	TTFB          time.Duration
+	ResponseSize  int64
+	Error         error
+	StatusSuccess bool // Whether status code matched expectation
 }
 
 // Stats holds aggregate statistics from a benchmark run
 type Stats struct {
-	Endpoint     string
-	URL          string
-	Method       string
-	Requests     int
-	Errors       int
-	Duration     time.Duration
-	TargetMs     int64
-	TargetMet    bool
-	MinMs        float64
-	MaxMs        float64
-	MeanMs       float64
-	StdDevMs     float64
-	P50Ms        float64
-	P95Ms        float64
-	P99Ms        float64
+	Endpoint       string
+	URL            string
+	Method         string
+	Requests       int
+	Errors         int    // Connection/request errors
+	StatusFailures int    // Unexpected status codes
+	ExpectedStatus int    // What status we expected
+	Duration       time.Duration
+	TargetMs       int64
+	TargetMet      bool
+	MinMs          float64
+	MaxMs          float64
+	MeanMs         float64
+	StdDevMs       float64
+	P50Ms          float64
+	P95Ms          float64
+	P99Ms          float64
 	RequestsPerSec float64
 }
 
@@ -72,10 +75,16 @@ func Run(name string, endpoint *config.EndpointConfig, opts Options) (*Stats, er
 		Timeout: 30 * time.Second,
 	}
 
+	// Determine expected status code
+	expectedStatus := endpoint.Expect
+	if expectedStatus == 0 {
+		expectedStatus = 200 // Default to 200, but we'll accept any 2xx
+	}
+
 	startTime := time.Now()
 
 	for i := 0; i < opts.Requests; i++ {
-		result := makeRequest(client, endpoint)
+		result := makeRequest(client, endpoint, expectedStatus)
 		results = append(results, result)
 
 		// Delay between requests (unless last one)
@@ -86,10 +95,10 @@ func Run(name string, endpoint *config.EndpointConfig, opts Options) (*Stats, er
 
 	totalDuration := time.Since(startTime)
 
-	return calculateStats(name, endpoint, results, totalDuration), nil
+	return calculateStats(name, endpoint, results, totalDuration, expectedStatus), nil
 }
 
-func makeRequest(client *http.Client, endpoint *config.EndpointConfig) Result {
+func makeRequest(client *http.Client, endpoint *config.EndpointConfig, expectedStatus int) Result {
 	method := endpoint.Method
 	if method == "" {
 		method = "GET"
@@ -122,35 +131,50 @@ func makeRequest(client *http.Client, endpoint *config.EndpointConfig) Result {
 	resp.Body.Close()
 	latency := time.Since(start)
 
+	// Check status code
+	statusSuccess := false
+	if endpoint.Expect != 0 {
+		// Exact match required
+		statusSuccess = resp.StatusCode == expectedStatus
+	} else {
+		// Accept any 2xx
+		statusSuccess = resp.StatusCode >= 200 && resp.StatusCode < 300
+	}
+
 	return Result{
-		StatusCode:   resp.StatusCode,
-		Latency:      latency,
-		TTFB:         ttfb,
-		ResponseSize: int64(len(bodyBytes)),
-		Error:        nil,
+		StatusCode:    resp.StatusCode,
+		Latency:       latency,
+		TTFB:          ttfb,
+		ResponseSize:  int64(len(bodyBytes)),
+		Error:         nil,
+		StatusSuccess: statusSuccess,
 	}
 }
 
-func calculateStats(name string, endpoint *config.EndpointConfig, results []Result, totalDuration time.Duration) *Stats {
+func calculateStats(name string, endpoint *config.EndpointConfig, results []Result, totalDuration time.Duration, expectedStatus int) *Stats {
 	stats := &Stats{
-		Endpoint: name,
-		URL:      endpoint.URL,
-		Method:   endpoint.Method,
-		Requests: len(results),
-		Duration: totalDuration,
-		TargetMs: int64(endpoint.Target.Duration() / time.Millisecond),
+		Endpoint:       name,
+		URL:            endpoint.URL,
+		Method:         endpoint.Method,
+		Requests:       len(results),
+		Duration:       totalDuration,
+		TargetMs:       int64(endpoint.Target.Duration() / time.Millisecond),
+		ExpectedStatus: expectedStatus,
 	}
 
 	if stats.Method == "" {
 		stats.Method = "GET"
 	}
 
-	// Collect latencies, count errors
+	// Collect latencies, count errors and status failures
 	latencies := make([]float64, 0, len(results))
 	for _, r := range results {
 		if r.Error != nil {
 			stats.Errors++
 			continue
+		}
+		if !r.StatusSuccess {
+			stats.StatusFailures++
 		}
 		latencies = append(latencies, float64(r.Latency.Microseconds()) / 1000.0)
 	}
