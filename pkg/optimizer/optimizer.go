@@ -219,8 +219,8 @@ func (o *Optimizer) getProposalWithTools(context string) (*Proposal, bool, error
 
 Your task:
 1. State HYPOTHESIS in one line
-2. Use MAX 5 tool calls to find the relevant code
-3. Output JSON proposal
+2. Use tools to find the relevant code and understand the performance issue
+3. Output JSON proposal with a fix
 
 OUTPUT FORMAT (must be valid JSON, nothing after):
 
@@ -230,11 +230,10 @@ Or if no optimization found:
 
 {"done":true,"done_reason":"..."}
 
-CRITICAL RULES:
-- MAX 5 tool calls, then you MUST output JSON
+RULES:
 - old_code must match file EXACTLY (copy/paste from read_file output)
-- ONE change only
-- No narration, no explanation, just hypothesis then tools then JSON`
+- ONE change only per proposal
+- No narration text, just hypothesis then tools then JSON`
 
 	if o.cfg.Rules != "" {
 		systemPrompt += "\n\nUser rules:\n" + o.cfg.Rules

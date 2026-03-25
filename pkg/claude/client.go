@@ -116,7 +116,7 @@ func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableT
 
 	totalInputTokens := 0
 	totalOutputTokens := 0
-	maxTurns := 8 // Limit tool turns - Claude should propose within 5-6 calls
+	maxTurns := 30 // Allow plenty of exploration per iteration
 
 	for turn := 0; turn < maxTurns; turn++ {
 		resp, err := c.sendRequest(systemPrompt, messages, availableTools)
