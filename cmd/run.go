@@ -50,7 +50,8 @@ func init() {
 
 func runOptimize(endpointName string, maxIterations int, dryRun bool) error {
 	// Check for claude cli
-	if err := analyzer.CheckClaudeCLI(); err != nil {
+	claudePath, err := analyzer.CheckClaudeCLI()
+	if err != nil {
 		return err
 	}
 
@@ -78,5 +79,5 @@ func runOptimize(endpointName string, maxIterations int, dryRun bool) error {
 		fmt.Println("  Rules: configured")
 	}
 
-	return analyzer.RunOptimizationLoop(cfg, endpointName, endpoint, maxIterations, dryRun)
+	return analyzer.RunOptimizationLoop(claudePath, cfg, endpointName, endpoint, maxIterations, dryRun)
 }

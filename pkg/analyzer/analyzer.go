@@ -12,16 +12,31 @@ import (
 )
 
 // CheckClaudeCLI verifies claude cli is installed
-func CheckClaudeCLI() error {
-	_, err := exec.LookPath("claude")
-	if err != nil {
-		return fmt.Errorf("claude cli not found. Install from: https://github.com/anthropics/claude-code")
+func CheckClaudeCLI() (string, error) {
+	// Try standard PATH first
+	path, err := exec.LookPath("claude")
+	if err == nil {
+		return path, nil
 	}
-	return nil
+
+	// Check common installation locations
+	commonPaths := []string{
+		os.ExpandEnv("$HOME/.claude/local/claude"),
+		"/usr/local/bin/claude",
+		"/opt/homebrew/bin/claude",
+	}
+
+	for _, p := range commonPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+
+	return "", fmt.Errorf("claude cli not found. Install from: https://github.com/anthropics/claude-code")
 }
 
 // AnalyzeEndpoint uses Claude to analyze the code path for an endpoint
-func AnalyzeEndpoint(cfg *config.Config, endpointName string, endpoint *config.EndpointConfig, baseline *benchmark.Stats, dryRun bool) error {
+func AnalyzeEndpoint(claudePath string, cfg *config.Config, endpointName string, endpoint *config.EndpointConfig, baseline *benchmark.Stats, dryRun bool) error {
 	prompt := buildAnalysisPrompt(cfg, endpointName, endpoint, baseline, dryRun)
 
 	// Build claude command
@@ -38,7 +53,7 @@ func AnalyzeEndpoint(cfg *config.Config, endpointName string, endpoint *config.E
 		}
 	}
 
-	cmd := exec.Command("claude", args...)
+	cmd := exec.Command(claudePath, args...)
 	cmd.Dir, _ = os.Getwd()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -112,7 +127,7 @@ func buildAnalysisPrompt(cfg *config.Config, endpointName string, endpoint *conf
 }
 
 // RunOptimizationLoop runs the full optimization cycle
-func RunOptimizationLoop(cfg *config.Config, endpointName string, endpoint *config.EndpointConfig, maxIterations int, dryRun bool) error {
+func RunOptimizationLoop(claudePath string, cfg *config.Config, endpointName string, endpoint *config.EndpointConfig, maxIterations int, dryRun bool) error {
 	iteration := 0
 
 	for {
@@ -145,7 +160,7 @@ func RunOptimizationLoop(cfg *config.Config, endpointName string, endpoint *conf
 
 		// Run analysis
 		fmt.Println("\nAnalyzing endpoint...")
-		if err := AnalyzeEndpoint(cfg, endpointName, endpoint, baseline, dryRun); err != nil {
+		if err := AnalyzeEndpoint(claudePath, cfg, endpointName, endpoint, baseline, dryRun); err != nil {
 			return fmt.Errorf("analysis failed: %w", err)
 		}
 
