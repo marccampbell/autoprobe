@@ -182,12 +182,32 @@ func executeReadFile(input map[string]interface{}) (string, bool) {
 		return "path is required", true
 	}
 
+	// Block path traversal
+	if strings.Contains(path, "..") {
+		return "path cannot contain '..'", true
+	}
+
+	// Block reading sensitive files
+	lowerPath := strings.ToLower(path)
+	blockedPatterns := []string{".env", "secret", "password", "credential", ".git/"}
+	for _, pattern := range blockedPatterns {
+		if strings.Contains(lowerPath, pattern) {
+			return fmt.Sprintf("cannot read files matching '%s'", pattern), true
+		}
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Sprintf("Error reading file: %v", err), true
 	}
 
-	return string(data), false
+	content := string(data)
+	// Truncate very large files
+	if len(content) > 50000 {
+		return content[:50000] + "\n... (file truncated, too large)", false
+	}
+
+	return content, false
 }
 
 func executeListFiles(input map[string]interface{}) (string, bool) {
@@ -245,15 +265,24 @@ func executeGrep(input map[string]interface{}) (string, bool) {
 		return "pattern is required", true
 	}
 
+	// Block dangerous patterns
+	if strings.Contains(pattern, "..") {
+		return "pattern cannot contain '..'", true
+	}
+
 	path := "."
 	if p, ok := input["path"].(string); ok {
+		// Block path traversal
+		if strings.Contains(p, "..") {
+			return "path cannot contain '..'", true
+		}
 		path = p
 	}
 
-	args := []string{"-r", "-n", pattern, path}
+	args := []string{"-r", "-n", "--max-count=100", pattern, path}
 
 	if include, ok := input["include"].(string); ok {
-		args = []string{"-r", "-n", "--include", include, pattern, path}
+		args = []string{"-r", "-n", "--max-count=100", "--include", include, pattern, path}
 	}
 
 	cmd := exec.Command("grep", args...)
@@ -268,8 +297,8 @@ func executeGrep(input map[string]interface{}) (string, bool) {
 
 	result := strings.TrimSpace(string(output))
 	// Truncate if too long
-	if len(result) > 10000 {
-		result = result[:10000] + "\n... (truncated)"
+	if len(result) > 8000 {
+		result = result[:8000] + "\n... (truncated, use more specific pattern)"
 	}
 
 	return result, false

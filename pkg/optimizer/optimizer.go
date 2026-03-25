@@ -59,13 +59,6 @@ func (o *Optimizer) Run(maxIterations int) error {
 		return nil
 	}
 
-	// Gather initial context
-	fmt.Println("\n=== Gathering Context ===")
-	context, err := o.gatherContext()
-	if err != nil {
-		return fmt.Errorf("failed to gather context: %w", err)
-	}
-
 	// Main optimization loop
 	for {
 		o.state.Iteration++
@@ -77,19 +70,29 @@ func (o *Optimizer) Run(maxIterations int) error {
 
 		fmt.Printf("\n=== Iteration %d ===\n", o.state.Iteration)
 
-		// Get proposal from LLM
-		proposal, done, err := o.getProposal(context)
+		// Phase 1: Explore and analyze
+		fmt.Println("Analyzing...")
+		analysis, err := o.analyzeEndpoint()
 		if err != nil {
-			return fmt.Errorf("failed to get proposal: %w", err)
+			fmt.Printf("Analysis failed: %v\n", err)
+			break
+		}
+
+		// Phase 2: Get proposal based on analysis
+		fmt.Println("Generating proposal...")
+		proposal, done, err := o.getProposal(analysis)
+		if err != nil {
+			fmt.Printf("Failed to get proposal: %v\n", err)
+			break
 		}
 
 		if done {
-			fmt.Println("\n✓ LLM indicates no more optimizations available")
+			fmt.Println("No more optimizations identified.")
 			break
 		}
 
 		if proposal == nil {
-			fmt.Println("No proposal returned, stopping")
+			fmt.Println("No proposal returned.")
 			break
 		}
 
@@ -98,9 +101,7 @@ func (o *Optimizer) Run(maxIterations int) error {
 		fmt.Printf("File: %s\n", proposal.File)
 
 		if o.dryRun {
-			fmt.Println("\n[DRY RUN] Would apply:")
-			fmt.Printf("--- %s\n", proposal.File)
-			fmt.Printf("+++ %s\n", proposal.File)
+			fmt.Println("\n[DRY RUN] Would apply this change:")
 			fmt.Println(formatDiff(proposal.OldCode, proposal.NewCode))
 			o.state.RecordAttempt(proposal.Hypothesis, proposal.Change, proposal.File, "", o.state.CurrentP95, 0, false)
 			continue
@@ -110,7 +111,7 @@ func (o *Optimizer) Run(maxIterations int) error {
 		fmt.Println("\nApplying change...")
 		originalContent, err := o.applyChange(proposal)
 		if err != nil {
-			fmt.Printf("Failed to apply change: %v\n", err)
+			fmt.Printf("Failed to apply: %v\n", err)
 			o.state.RecordAttempt(proposal.Hypothesis, proposal.Change, proposal.File, "", o.state.CurrentP95, 0, false)
 			continue
 		}
@@ -119,7 +120,7 @@ func (o *Optimizer) Run(maxIterations int) error {
 		fmt.Println("Benchmarking...")
 		afterStats, err := o.runBenchmark()
 		if err != nil {
-			fmt.Printf("Benchmark failed: %v, reverting\n", err)
+			fmt.Printf("Benchmark failed, reverting: %v\n", err)
 			o.revertChange(proposal.File, originalContent)
 			o.state.RecordAttempt(proposal.Hypothesis, proposal.Change, proposal.File, "", o.state.CurrentP95, 0, false)
 			continue
@@ -130,14 +131,12 @@ func (o *Optimizer) Run(maxIterations int) error {
 		improved := p95After < p95Before
 
 		if improved {
-			fmt.Printf("✓ Improved! p95: %.1fms → %.1fms (%.1fms faster)\n", p95Before, p95After, p95Before-p95After)
+			improvement := p95Before - p95After
+			fmt.Printf("\nResult: KEEP — p95 improved by %.1fms (%.1fms → %.1fms)\n", improvement, p95Before, p95After)
 			diff := formatDiff(proposal.OldCode, proposal.NewCode)
 			o.state.RecordAttempt(proposal.Hypothesis, proposal.Change, proposal.File, diff, p95Before, p95After, true)
-
-			// Update context with new code
-			context, _ = o.gatherContext()
 		} else {
-			fmt.Printf("✗ No improvement. p95: %.1fms → %.1fms, reverting\n", p95Before, p95After)
+			fmt.Printf("\nResult: DISCARD — no improvement (%.1fms → %.1fms)\n", p95Before, p95After)
 			o.revertChange(proposal.File, originalContent)
 			o.state.RecordAttempt(proposal.Hypothesis, proposal.Change, proposal.File, "", p95Before, p95After, false)
 		}
@@ -164,150 +163,118 @@ func (o *Optimizer) runBenchmark() (*benchmark.Stats, error) {
 	return benchmark.Run(o.name, o.endpoint, opts)
 }
 
-func (o *Optimizer) gatherContext() (string, error) {
-	// Use tools to gather context about the codebase
-	var context strings.Builder
+// analyzeEndpoint uses tools to explore the codebase and returns analysis text
+func (o *Optimizer) analyzeEndpoint() (string, error) {
+	systemPrompt := `You are a code analyzer. Your job is to explore a codebase to understand an API endpoint's implementation.
 
-	context.WriteString("## Project Structure\n\n")
+Use the provided tools to:
+1. Find the route/handler for the endpoint
+2. Read the handler code
+3. Trace calls to services, repositories, database queries
+4. Look for performance issues (N+1 queries, missing indexes, inefficient loops)
 
-	// List top-level files
-	result := tools.ExecuteTool(tools.ToolUse{
-		Name:  "list_files",
-		Input: map[string]interface{}{"path": "."},
+After exploring, provide a brief summary of what you found and potential optimizations.
+
+IMPORTANT: 
+- Do NOT use git commands
+- Do NOT modify any files
+- Only read and search`
+
+	userPrompt := fmt.Sprintf(`Analyze this endpoint:
+- Method: %s
+- URL: %s
+
+Find the handler code and trace the implementation. Look for performance bottlenecks.
+`, o.endpoint.Method, o.endpoint.URL)
+
+	// Use read-only tools for analysis
+	availableTools := tools.GetTools(false)
+
+	var analysis strings.Builder
+	err := o.client.RunWithTools(systemPrompt, userPrompt, availableTools, func(text string) {
+		analysis.WriteString(text)
 	})
-	context.WriteString("```\n")
-	context.WriteString(result.Content)
-	context.WriteString("\n```\n\n")
 
-	// Try to find route definitions
-	context.WriteString("## Route Definitions (grep results)\n\n")
-
-	// Extract path from URL for searching
-	urlPath := extractPath(o.endpoint.URL)
-	if urlPath != "" {
-		result = tools.ExecuteTool(tools.ToolUse{
-			Name: "grep",
-			Input: map[string]interface{}{
-				"pattern": urlPath,
-				"include": "*.go",
-			},
-		})
-		if !result.IsError && result.Content != "No matches found" {
-			context.WriteString("```\n")
-			context.WriteString(result.Content)
-			context.WriteString("\n```\n\n")
-		}
-	}
-
-	return context.String(), nil
+	return analysis.String(), err
 }
 
-func (o *Optimizer) getProposal(context string) (*Proposal, bool, error) {
-	systemPrompt := o.buildSystemPrompt()
-	userPrompt := o.buildUserPrompt(context)
+// getProposal asks for a structured optimization proposal
+func (o *Optimizer) getProposal(analysis string) (*Proposal, bool, error) {
+	systemPrompt := `You are a code optimizer. Based on the analysis provided, propose ONE specific code change.
 
-	// For proposals, we want structured JSON output, not tool use
-	// So we use a simpler request
-	response, err := o.client.Complete(systemPrompt, userPrompt)
+You MUST respond with ONLY valid JSON in this exact format:
+
+{
+  "proposal": {
+    "hypothesis": "Brief explanation of what is slow and why",
+    "change": "Human-readable description of the fix",
+    "file": "path/to/file.go",
+    "old_code": "exact code to replace (must match file exactly)",
+    "new_code": "the optimized replacement"
+  }
+}
+
+Or if no optimizations are possible:
+
+{
+  "done": true,
+  "done_reason": "Why no more optimizations are possible"
+}
+
+Rules:
+- Propose ONE change only
+- old_code must match EXACTLY (including whitespace)
+- Focus on high-impact: N+1 queries, missing indexes, inefficient algorithms
+- Do NOT propose changes already tried`
+
+	if o.cfg.Rules != "" {
+		systemPrompt += "\n\nUser rules:\n" + o.cfg.Rules
+	}
+
+	var userPrompt strings.Builder
+	userPrompt.WriteString("## Analysis Results\n\n")
+	userPrompt.WriteString(analysis)
+	userPrompt.WriteString("\n\n")
+	userPrompt.WriteString(o.state.FormatSummary())
+	userPrompt.WriteString("\n")
+	userPrompt.WriteString(o.state.FormatHistory())
+	userPrompt.WriteString("\n\nBased on this analysis, propose ONE optimization. Respond with JSON only.")
+
+	response, err := o.client.Complete(systemPrompt, userPrompt.String())
 	if err != nil {
 		return nil, false, err
 	}
 
-	// Parse the JSON response
+	// Parse JSON response
 	var proposalResp ProposalResponse
-	if err := json.Unmarshal([]byte(response), &proposalResp); err != nil {
-		// Try to extract JSON from the response
-		jsonStr := extractJSON(response)
-		if jsonStr != "" {
-			if err := json.Unmarshal([]byte(jsonStr), &proposalResp); err != nil {
-				return nil, false, fmt.Errorf("failed to parse proposal: %w\nResponse: %s", err, response)
-			}
-		} else {
-			return nil, false, fmt.Errorf("failed to parse proposal: %w\nResponse: %s", err, response)
-		}
+	jsonStr := extractJSON(response)
+	if jsonStr == "" {
+		return nil, false, fmt.Errorf("no JSON found in response")
+	}
+
+	if err := json.Unmarshal([]byte(jsonStr), &proposalResp); err != nil {
+		return nil, false, fmt.Errorf("invalid JSON: %w", err)
 	}
 
 	return proposalResp.Proposal, proposalResp.Done, nil
 }
 
-func (o *Optimizer) buildSystemPrompt() string {
-	prompt := `You are autoprobe, an AI performance optimizer. Your job is to propose ONE specific code change to improve API endpoint performance.
-
-IMPORTANT: You must respond with ONLY valid JSON in this exact format:
-
-{
-  "proposal": {
-    "hypothesis": "Brief explanation of what you think is slow and why",
-    "change": "Human-readable description of the change",
-    "file": "path/to/file.go",
-    "old_code": "exact code to find and replace",
-    "new_code": "the optimized replacement code"
-  }
-}
-
-Or if you believe no more optimizations are possible:
-
-{
-  "done": true,
-  "done_reason": "Explanation of why no more optimizations are possible"
-}
-
-Rules:
-- Propose only ONE change at a time
-- The old_code must match EXACTLY what's in the file (including whitespace)
-- Focus on high-impact changes: N+1 queries, missing indexes, inefficient algorithms
-- Do NOT propose changes that were already tried and failed`
-
-	if o.cfg.Rules != "" {
-		prompt += "\n\nAdditional rules from user:\n" + o.cfg.Rules
-	}
-
-	return prompt
-}
-
-func (o *Optimizer) buildUserPrompt(context string) string {
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("## Target Endpoint\n\n"))
-	sb.WriteString(fmt.Sprintf("- Name: %s\n", o.name))
-	sb.WriteString(fmt.Sprintf("- Method: %s\n", o.endpoint.Method))
-	sb.WriteString(fmt.Sprintf("- URL: %s\n", o.endpoint.URL))
-	if o.endpoint.Target.Duration() > 0 {
-		sb.WriteString(fmt.Sprintf("- Target: %s\n", o.endpoint.Target.Duration()))
-	}
-	sb.WriteString("\n")
-
-	sb.WriteString(o.state.FormatSummary())
-	sb.WriteString("\n")
-	sb.WriteString(o.state.FormatHistory())
-	sb.WriteString("\n")
-	sb.WriteString(context)
-
-	sb.WriteString("\nAnalyze the code and propose ONE optimization. Use grep/read_file patterns if you need to see more code before proposing.")
-
-	return sb.String()
-}
-
 func (o *Optimizer) applyChange(proposal *Proposal) (string, error) {
-	// Read original content
 	content, err := os.ReadFile(proposal.File)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
 	originalContent := string(content)
 
-	// Check if old_code exists
 	if !strings.Contains(originalContent, proposal.OldCode) {
 		return "", fmt.Errorf("old_code not found in file")
 	}
 
-	// Count occurrences
 	count := strings.Count(originalContent, proposal.OldCode)
 	if count > 1 {
 		return "", fmt.Errorf("old_code found %d times, need exactly 1", count)
 	}
 
-	// Apply the change
 	newContent := strings.Replace(originalContent, proposal.OldCode, proposal.NewCode, 1)
 
 	if err := os.WriteFile(proposal.File, []byte(newContent), 0644); err != nil {
@@ -328,25 +295,26 @@ func (o *Optimizer) printSummary() {
 	fmt.Printf("\nEndpoint: %s\n", o.name)
 	fmt.Printf("Duration: %s\n", time.Since(o.state.StartTime).Round(time.Second))
 	fmt.Printf("Iterations: %d\n", o.state.Iteration)
-	fmt.Printf("\nPerformance:\n")
-	fmt.Printf("  Baseline p95: %.1fms\n", o.state.BaselineP95)
-	fmt.Printf("  Final p95:    %.1fms\n", o.state.CurrentP95)
-	fmt.Printf("  Improvement:  %.1fms (%.1f%%)\n",
-		o.state.TotalImprovement(),
-		(o.state.TotalImprovement()/o.state.BaselineP95)*100)
+	fmt.Printf("\nBaseline p95: %.1fms\n", o.state.BaselineP95)
+	fmt.Printf("Final p95:    %.1fms\n", o.state.CurrentP95)
+
+	improvement := o.state.TotalImprovement()
+	if improvement > 0 {
+		fmt.Printf("Improvement:  %.1fms (%.1f%% faster)\n", improvement, (improvement/o.state.BaselineP95)*100)
+	}
 
 	successful := o.state.SuccessfulAttempts()
 	failed := o.state.FailedAttempts()
 
 	if len(successful) > 0 {
-		fmt.Printf("\nSuccessful changes (%d):\n", len(successful))
+		fmt.Printf("\nKept (%d):\n", len(successful))
 		for _, a := range successful {
-			fmt.Printf("  ✓ %s (%.1fms faster)\n", a.Change, a.P95Before-a.P95After)
+			fmt.Printf("  ✓ %s (-%.1fms)\n", a.Change, a.P95Before-a.P95After)
 		}
 	}
 
 	if len(failed) > 0 {
-		fmt.Printf("\nFailed attempts (%d):\n", len(failed))
+		fmt.Printf("\nDiscarded (%d):\n", len(failed))
 		for _, a := range failed {
 			fmt.Printf("  ✗ %s\n", a.Hypothesis)
 		}
@@ -355,25 +323,7 @@ func (o *Optimizer) printSummary() {
 
 // Helper functions
 
-func extractPath(url string) string {
-	// Extract the path portion from URL for grep
-	// e.g., "http://localhost:8080/v1/apps" -> "/v1/apps"
-	if idx := strings.Index(url, "://"); idx != -1 {
-		rest := url[idx+3:]
-		if idx := strings.Index(rest, "/"); idx != -1 {
-			path := rest[idx:]
-			// Remove query string
-			if idx := strings.Index(path, "?"); idx != -1 {
-				path = path[:idx]
-			}
-			return path
-		}
-	}
-	return ""
-}
-
 func extractJSON(s string) string {
-	// Try to find JSON object in the response
 	start := strings.Index(s, "{")
 	if start == -1 {
 		return ""
@@ -395,13 +345,10 @@ func extractJSON(s string) string {
 
 func formatDiff(old, new string) string {
 	var sb strings.Builder
-	oldLines := strings.Split(old, "\n")
-	newLines := strings.Split(new, "\n")
-
-	for _, line := range oldLines {
+	for _, line := range strings.Split(old, "\n") {
 		sb.WriteString("- " + line + "\n")
 	}
-	for _, line := range newLines {
+	for _, line := range strings.Split(new, "\n") {
 		sb.WriteString("+ " + line + "\n")
 	}
 	return sb.String()

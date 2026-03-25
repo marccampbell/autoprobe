@@ -133,7 +133,7 @@ func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableT
 				if onMessage != nil {
 					onMessage(block.Text)
 				}
-				fmt.Println(block.Text)
+				// Don't print intermediate text, just collect it
 			} else if block.Type == "tool_use" {
 				toolUses = append(toolUses, tools.ToolUse{
 					ID:    block.ID,
@@ -145,7 +145,6 @@ func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableT
 
 		// If no tool uses, we're done
 		if len(toolUses) == 0 || resp.StopReason == "end_turn" {
-			fmt.Printf("\n[Tokens used: %d input, %d output]\n", totalInputTokens, totalOutputTokens)
 			return nil
 		}
 
@@ -158,7 +157,6 @@ func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableT
 		// Execute tools and collect results
 		var toolResults []ContentBlock
 		for _, tu := range toolUses {
-			fmt.Printf("  → %s\n", tu.Name)
 			result := tools.ExecuteTool(tu)
 			toolResults = append(toolResults, ContentBlock{
 				Type:      "tool_result",
