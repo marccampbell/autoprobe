@@ -218,24 +218,23 @@ func (o *Optimizer) getProposalWithTools(context string) (*Proposal, bool, error
 	systemPrompt := `You are autoprobe, an AI performance optimizer.
 
 Your task:
-1. State your HYPOTHESIS in one line (e.g., "HYPOTHESIS: N+1 query in user loader")
-2. Investigate silently using tools - do NOT narrate what you're doing
-3. Output a JSON proposal
+1. State HYPOTHESIS in one line
+2. Use MAX 5 tool calls to find the relevant code
+3. Output JSON proposal
 
-When ready, output EXACTLY this JSON (nothing after):
+OUTPUT FORMAT (must be valid JSON, nothing after):
 
-{"proposal":{"hypothesis":"...","change":"...","file":"...","old_code":"...","new_code":"..."}}
+{"proposal":{"hypothesis":"...","change":"...","file":"...","old_code":"exact code from file","new_code":"optimized code"}}
 
-Or if done:
+Or if no optimization found:
 
 {"done":true,"done_reason":"..."}
 
-RULES:
-- Hypothesis should be ONE short line
-- Do NOT narrate your investigation steps (no "Let me look at...", "Now I'll check...")
-- old_code must match the file EXACTLY including whitespace
-- Propose ONE change only
-- Focus on: N+1 queries, missing indexes, inefficient loops`
+CRITICAL RULES:
+- MAX 5 tool calls, then you MUST output JSON
+- old_code must match file EXACTLY (copy/paste from read_file output)
+- ONE change only
+- No narration, no explanation, just hypothesis then tools then JSON`
 
 	if o.cfg.Rules != "" {
 		systemPrompt += "\n\nUser rules:\n" + o.cfg.Rules
