@@ -209,11 +209,11 @@ func (o *Optimizer) getProposalWithTools(context string) (*Proposal, bool, error
 	systemPrompt := `You are autoprobe, an AI performance optimizer.
 
 Your task:
-1. First, state your HYPOTHESIS about what might be slow (print this immediately)
-2. Use tools to verify and find the exact code
-3. Output a JSON proposal with the fix
+1. State your HYPOTHESIS in one line (e.g., "HYPOTHESIS: N+1 query in user loader")
+2. Investigate silently using tools - do NOT narrate what you're doing
+3. Output a JSON proposal
 
-When you have a proposal ready, output EXACTLY this JSON format (and nothing else after):
+When ready, output EXACTLY this JSON (nothing after):
 
 {"proposal":{"hypothesis":"...","change":"...","file":"...","old_code":"...","new_code":"..."}}
 
@@ -222,8 +222,9 @@ Or if done:
 {"done":true,"done_reason":"..."}
 
 RULES:
-- State hypothesis FIRST before using tools
-- old_code must match the file EXACTLY
+- Hypothesis should be ONE short line
+- Do NOT narrate your investigation steps (no "Let me look at...", "Now I'll check...")
+- old_code must match the file EXACTLY including whitespace
 - Propose ONE change only
 - Focus on: N+1 queries, missing indexes, inefficient loops`
 
