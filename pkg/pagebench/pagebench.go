@@ -129,7 +129,26 @@ func Run(name string, page *config.PageConfig) (*PageStats, error) {
 		})
 	})
 
-	// Navigate
+	// If localStorage/sessionStorage needed, navigate to origin first to set it
+	if len(page.LocalStorage) > 0 || len(page.SessionStorage) > 0 {
+		// Navigate to origin to establish context
+		origin := extractOrigin(page.URL)
+		pg.Goto(origin, playwright.PageGotoOptions{
+			WaitUntil: playwright.WaitUntilStateCommit,
+		})
+		
+		// Set localStorage
+		for key, value := range page.LocalStorage {
+			pg.Evaluate(fmt.Sprintf(`localStorage.setItem(%q, %q)`, key, value))
+		}
+		
+		// Set sessionStorage
+		for key, value := range page.SessionStorage {
+			pg.Evaluate(fmt.Sprintf(`sessionStorage.setItem(%q, %q)`, key, value))
+		}
+	}
+
+	// Navigate to actual page
 	pageStart := time.Now()
 	_, err = pg.Goto(page.URL, playwright.PageGotoOptions{
 		WaitUntil: playwright.WaitUntilStateNetworkidle,
@@ -139,12 +158,7 @@ func Run(name string, page *config.PageConfig) (*PageStats, error) {
 	}
 	fullyLoaded := time.Since(pageStart)
 
-	// Set localStorage if provided (after page load)
-	if len(page.LocalStorage) > 0 {
-		for key, value := range page.LocalStorage {
-			pg.Evaluate(fmt.Sprintf(`localStorage.setItem(%q, %q)`, key, value))
-		}
-	}
+
 
 	// Calculate stats
 	stats := &PageStats{
@@ -260,4 +274,18 @@ func extractDomain(url string) string {
 		host = host[:idx]
 	}
 	return host
+}
+
+func extractOrigin(url string) string {
+	// Get scheme + host (+ port if present)
+	start := strings.Index(url, "://")
+	if start == -1 {
+		return url
+	}
+	rest := url[start+3:]
+	end := strings.Index(rest, "/")
+	if end == -1 {
+		return url
+	}
+	return url[:start+3+end]
 }

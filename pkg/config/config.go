@@ -21,11 +21,12 @@ type Config struct {
 
 // PageConfig represents a page to benchmark (browser-based)
 type PageConfig struct {
-	URL       string            `yaml:"url"`
-	Cookies   []CookieConfig    `yaml:"cookies"`
-	LocalStorage map[string]string `yaml:"localStorage"`
-	Headers   map[string]string `yaml:"headers"`
-	WaitFor   string            `yaml:"wait_for"` // "networkidle", "load", "domcontentloaded", or selector
+	URL            string            `yaml:"url"`
+	Cookies        []CookieConfig    `yaml:"cookies"`
+	LocalStorage   map[string]string `yaml:"localStorage"`
+	SessionStorage map[string]string `yaml:"sessionStorage"`
+	Headers        map[string]string `yaml:"headers"`
+	WaitFor        string            `yaml:"wait_for"` // "networkidle", "load", "domcontentloaded", or selector
 }
 
 // CookieConfig represents a browser cookie
