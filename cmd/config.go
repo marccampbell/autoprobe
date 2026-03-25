@@ -77,11 +77,6 @@ func runConfigLint() error {
 			method = "GET"
 		}
 
-		// Warn if no target set
-		if ep.Target.Duration() == 0 {
-			warnings = append(warnings, fmt.Sprintf("endpoint %q: no target latency set", name))
-		}
-
 		// Warn if POST/PUT/PATCH without body
 		if (method == "POST" || method == "PUT" || method == "PATCH") && ep.Body == "" {
 			warnings = append(warnings, fmt.Sprintf("endpoint %q: %s request without body", name, method))
