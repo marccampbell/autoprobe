@@ -76,6 +76,33 @@ func NewClient() (*Client, error) {
 	}, nil
 }
 
+// Complete sends a simple completion request without tools
+func (c *Client) Complete(systemPrompt string, userPrompt string) (string, error) {
+	messages := []Message{
+		{
+			Role: "user",
+			Content: []ContentBlock{
+				{Type: "text", Text: userPrompt},
+			},
+		},
+	}
+
+	resp, err := c.sendRequest(systemPrompt, messages, nil)
+	if err != nil {
+		return "", err
+	}
+
+	// Extract text from response
+	var result string
+	for _, block := range resp.Content {
+		if block.Type == "text" {
+			result += block.Text
+		}
+	}
+
+	return result, nil
+}
+
 // RunWithTools executes a prompt with tools until completion
 func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableTools []tools.Tool, onMessage func(string)) error {
 	messages := []Message{

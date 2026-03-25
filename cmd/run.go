@@ -3,8 +3,8 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/marccampbell/autoprobe/pkg/analyzer"
 	"github.com/marccampbell/autoprobe/pkg/config"
+	"github.com/marccampbell/autoprobe/pkg/optimizer"
 	"github.com/spf13/cobra"
 )
 
@@ -73,5 +73,10 @@ func runOptimize(endpointName string, maxIterations int, dryRun bool) error {
 		fmt.Println("  Rules: configured")
 	}
 
-	return analyzer.RunOptimizationLoop(cfg, endpointName, endpoint, maxIterations, dryRun)
+	opt, err := optimizer.New(cfg, endpointName, endpoint, dryRun)
+	if err != nil {
+		return err
+	}
+
+	return opt.Run(maxIterations)
 }
