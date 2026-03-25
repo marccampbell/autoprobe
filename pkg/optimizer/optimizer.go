@@ -269,6 +269,10 @@ RULES:
 		return nil, false, fmt.Errorf("no JSON proposal found")
 	}
 
+	// Claude sometimes outputs JSON with literal tabs/newlines in strings
+	// which is invalid JSON - try to fix common issues
+	jsonStr = fixJSONEscaping(jsonStr)
+
 	var proposalResp ProposalResponse
 	if err := json.Unmarshal([]byte(jsonStr), &proposalResp); err != nil {
 		return nil, false, fmt.Errorf("invalid JSON: %w", err)
@@ -370,4 +374,55 @@ func formatDiff(old, new string) string {
 		sb.WriteString("+ " + line + "\n")
 	}
 	return sb.String()
+}
+
+// fixJSONEscaping fixes common JSON escaping issues from LLM output
+func fixJSONEscaping(s string) string {
+	// Replace literal tabs with escaped tabs
+	// But only inside string values, not the JSON structure
+	// This is a simple approach - find strings and fix them
+	
+	var result strings.Builder
+	inString := false
+	escaped := false
+	
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		
+		if escaped {
+			result.WriteByte(c)
+			escaped = false
+			continue
+		}
+		
+		if c == '\\' && inString {
+			escaped = true
+			result.WriteByte(c)
+			continue
+		}
+		
+		if c == '"' {
+			inString = !inString
+			result.WriteByte(c)
+			continue
+		}
+		
+		if inString {
+			// Replace problematic characters with escaped versions
+			switch c {
+			case '\t':
+				result.WriteString("\\t")
+			case '\n':
+				result.WriteString("\\n")
+			case '\r':
+				result.WriteString("\\r")
+			default:
+				result.WriteByte(c)
+			}
+		} else {
+			result.WriteByte(c)
+		}
+	}
+	
+	return result.String()
 }
