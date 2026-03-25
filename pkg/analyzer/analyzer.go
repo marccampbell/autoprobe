@@ -1,133 +1,100 @@
 package analyzer
 
 import (
-	"bytes"
 	"fmt"
-	"os"
-	"os/exec"
 	"time"
 
 	"github.com/marccampbell/autoprobe/pkg/benchmark"
+	"github.com/marccampbell/autoprobe/pkg/claude"
 	"github.com/marccampbell/autoprobe/pkg/config"
+	"github.com/marccampbell/autoprobe/pkg/tools"
 )
 
-// CheckClaudeCLI verifies claude cli is installed
-func CheckClaudeCLI() (string, error) {
-	// Try standard PATH first
-	path, err := exec.LookPath("claude")
-	if err == nil {
-		return path, nil
-	}
-
-	// Check common installation locations
-	commonPaths := []string{
-		os.ExpandEnv("$HOME/.claude/local/claude"),
-		"/usr/local/bin/claude",
-		"/opt/homebrew/bin/claude",
-	}
-
-	for _, p := range commonPaths {
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
-	}
-
-	return "", fmt.Errorf("claude cli not found. Install from: https://github.com/anthropics/claude-code")
-}
-
 // AnalyzeEndpoint uses Claude to analyze the code path for an endpoint
-func AnalyzeEndpoint(claudePath string, cfg *config.Config, endpointName string, endpoint *config.EndpointConfig, baseline *benchmark.Stats, dryRun bool) error {
-	prompt := buildAnalysisPrompt(cfg, endpointName, endpoint, baseline, dryRun)
-
-	// Build claude command
-	args := []string{
-		"-p", prompt,
-		"--allowedTools", "Read,Write,Edit,Glob,Grep,Bash",
+func AnalyzeEndpoint(cfg *config.Config, endpointName string, endpoint *config.EndpointConfig, baseline *benchmark.Stats, dryRun bool) error {
+	client, err := claude.NewClient()
+	if err != nil {
+		return err
 	}
 
-	if dryRun {
-		// In dry-run mode, don't allow writes
-		args = []string{
-			"-p", prompt,
-			"--allowedTools", "Read,Glob,Grep,Bash",
-		}
-	}
+	systemPrompt := buildSystemPrompt(cfg, dryRun)
+	userPrompt := buildUserPrompt(endpointName, endpoint, baseline, dryRun)
+	availableTools := tools.GetTools(!dryRun) // Allow writes only if not dry-run
 
-	cmd := exec.Command(claudePath, args...)
-	cmd.Dir, _ = os.Getwd()
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-
-	return cmd.Run()
+	return client.RunWithTools(systemPrompt, userPrompt, availableTools, nil)
 }
 
-func buildAnalysisPrompt(cfg *config.Config, endpointName string, endpoint *config.EndpointConfig, baseline *benchmark.Stats, dryRun bool) string {
-	var b bytes.Buffer
+func buildSystemPrompt(cfg *config.Config, dryRun bool) string {
+	prompt := `You are autoprobe, an AI performance optimizer. Your task is to analyze and optimize slow API endpoints.
 
-	b.WriteString("You are autoprobe, an AI performance optimizer. Your task is to analyze and optimize a slow API endpoint.\n\n")
+You have access to tools for reading and searching code. Use them to:
+1. Find route/handler definitions
+2. Trace code paths from handler to database
+3. Identify performance bottlenecks
+4. Suggest or apply optimizations
 
-	// Endpoint info
-	b.WriteString("## Target Endpoint\n\n")
-	b.WriteString(fmt.Sprintf("- Name: %s\n", endpointName))
-	b.WriteString(fmt.Sprintf("- Method: %s\n", endpoint.Method))
-	b.WriteString(fmt.Sprintf("- URL: %s\n", endpoint.URL))
-	if endpoint.Target.Duration() > 0 {
-		b.WriteString(fmt.Sprintf("- Target latency: %s\n", endpoint.Target.Duration()))
-	}
-	b.WriteString("\n")
+Be methodical. Start by understanding the project structure, then trace the specific endpoint.`
 
-	// Baseline stats
-	if baseline != nil {
-		b.WriteString("## Current Performance (Baseline)\n\n")
-		b.WriteString(fmt.Sprintf("- Requests: %d\n", baseline.Requests))
-		b.WriteString(fmt.Sprintf("- p50: %.1fms\n", baseline.P50Ms))
-		b.WriteString(fmt.Sprintf("- p95: %.1fms\n", baseline.P95Ms))
-		b.WriteString(fmt.Sprintf("- p99: %.1fms\n", baseline.P99Ms))
-		if baseline.StatusFailures > 0 {
-			b.WriteString(fmt.Sprintf("- Status failures: %d\n", baseline.StatusFailures))
-		}
-		b.WriteString("\n")
-	}
-
-	// Database info
-	if len(cfg.Databases) > 0 {
-		b.WriteString("## Databases\n\n")
-		b.WriteString("The following databases are configured (you can use these for query analysis):\n")
-		for name, db := range cfg.Databases {
-			b.WriteString(fmt.Sprintf("- %s: %s\n", name, db.Driver))
-		}
-		b.WriteString("\n")
-	}
-
-	// Rules
 	if cfg.Rules != "" {
-		b.WriteString("## Rules (You MUST follow these)\n\n")
-		b.WriteString(cfg.Rules)
-		b.WriteString("\n\n")
+		prompt += "\n\n## Rules (You MUST follow these)\n\n" + cfg.Rules
 	}
-
-	// Instructions
-	b.WriteString("## Your Task\n\n")
-	b.WriteString("1. **Find the code**: Locate the handler for this endpoint. Use Glob and Grep to search, then Read to examine files.\n")
-	b.WriteString("2. **Trace the path**: Follow the code from handler through services, repositories, and database queries.\n")
-	b.WriteString("3. **Identify bottlenecks**: Look for N+1 queries, missing indexes, inefficient algorithms, unnecessary allocations.\n")
-	b.WriteString("4. **Analyze queries**: If you find SQL queries, analyze them for optimization opportunities.\n")
 
 	if dryRun {
-		b.WriteString("5. **Report findings**: This is a DRY RUN. Do NOT modify any files. Just report what you found and what you would change.\n")
-	} else {
-		b.WriteString("5. **Apply fixes**: Make the necessary code changes to improve performance. Be surgical — small, targeted changes.\n")
-		b.WriteString("6. **Explain changes**: After each change, briefly explain what you did and why.\n")
+		prompt += "\n\nThis is a DRY RUN. Analyze and report findings, but do NOT modify any files."
 	}
 
-	b.WriteString("\nStart by exploring the project structure to find the route definitions.\n")
+	return prompt
+}
 
-	return b.String()
+func buildUserPrompt(endpointName string, endpoint *config.EndpointConfig, baseline *benchmark.Stats, dryRun bool) string {
+	prompt := fmt.Sprintf(`Analyze and optimize this endpoint:
+
+## Target Endpoint
+- Name: %s
+- Method: %s
+- URL: %s
+`, endpointName, endpoint.Method, endpoint.URL)
+
+	if endpoint.Target.Duration() > 0 {
+		prompt += fmt.Sprintf("- Target latency: %s\n", endpoint.Target.Duration())
+	}
+
+	if baseline != nil {
+		prompt += fmt.Sprintf(`
+## Current Performance (Baseline)
+- Requests: %d
+- p50: %.1fms
+- p95: %.1fms  
+- p99: %.1fms
+`, baseline.Requests, baseline.P50Ms, baseline.P95Ms, baseline.P99Ms)
+
+		if baseline.StatusFailures > 0 {
+			prompt += fmt.Sprintf("- Status failures: %d\n", baseline.StatusFailures)
+		}
+	}
+
+	prompt += `
+## Your Task
+
+1. **Find the code**: Use list_files and grep to locate the route handler for this endpoint
+2. **Trace the path**: Read the handler file, follow calls to services/repositories
+3. **Identify bottlenecks**: Look for N+1 queries, missing indexes, inefficient loops, unnecessary allocations
+4. **Analyze SQL**: If you find database queries, analyze them for optimization
+`
+
+	if dryRun {
+		prompt += "\n5. **Report findings**: List what you found and what optimizations you would recommend. Do NOT modify files."
+	} else {
+		prompt += "\n5. **Apply fixes**: Make targeted code changes to improve performance. Explain each change."
+	}
+
+	prompt += "\n\nStart by exploring the project structure."
+
+	return prompt
 }
 
 // RunOptimizationLoop runs the full optimization cycle
-func RunOptimizationLoop(claudePath string, cfg *config.Config, endpointName string, endpoint *config.EndpointConfig, maxIterations int, dryRun bool) error {
+func RunOptimizationLoop(cfg *config.Config, endpointName string, endpoint *config.EndpointConfig, maxIterations int, dryRun bool) error {
 	iteration := 0
 
 	for {
@@ -160,7 +127,7 @@ func RunOptimizationLoop(claudePath string, cfg *config.Config, endpointName str
 
 		// Run analysis
 		fmt.Println("\nAnalyzing endpoint...")
-		if err := AnalyzeEndpoint(claudePath, cfg, endpointName, endpoint, baseline, dryRun); err != nil {
+		if err := AnalyzeEndpoint(cfg, endpointName, endpoint, baseline, dryRun); err != nil {
 			return fmt.Errorf("analysis failed: %w", err)
 		}
 

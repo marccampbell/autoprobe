@@ -25,7 +25,7 @@ Review with 'git diff' and commit what you want to keep.
 
 The endpoint must be defined in .autoprobe.yaml.
 
-Requires claude cli to be installed and authenticated.`,
+Requires ANTHROPIC_API_KEY to be set.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		endpointName := args[0]
@@ -49,12 +49,6 @@ func init() {
 }
 
 func runOptimize(endpointName string, maxIterations int, dryRun bool) error {
-	// Check for claude cli
-	claudePath, err := analyzer.CheckClaudeCLI()
-	if err != nil {
-		return err
-	}
-
 	// Load config
 	cfg, err := config.LoadDefault()
 	if err != nil {
@@ -79,5 +73,5 @@ func runOptimize(endpointName string, maxIterations int, dryRun bool) error {
 		fmt.Println("  Rules: configured")
 	}
 
-	return analyzer.RunOptimizationLoop(claudePath, cfg, endpointName, endpoint, maxIterations, dryRun)
+	return analyzer.RunOptimizationLoop(cfg, endpointName, endpoint, maxIterations, dryRun)
 }
