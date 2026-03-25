@@ -6,29 +6,27 @@ import (
 
 	"github.com/marccampbell/autoprobe/pkg/benchmark"
 	"github.com/marccampbell/autoprobe/pkg/config"
+	"github.com/marccampbell/autoprobe/pkg/pagebench"
 	"github.com/spf13/cobra"
 )
 
 var benchmarkCmd = &cobra.Command{
-	Use:   "benchmark <endpoint>",
-	Short: "Run performance benchmarks on an endpoint",
-	Long: `Benchmark an endpoint with configurable load.
+	Use:   "benchmark <name>",
+	Short: "Run performance benchmarks on an endpoint or page",
+	Long: `Benchmark an endpoint or page.
 
-Runs multiple requests against the specified endpoint and reports
-latency statistics (min, max, mean, p50, p95, p99).
+For endpoints: runs multiple HTTP requests and reports latency statistics.
+For pages: loads in a browser and reports TTFB, load time, request count, duplicates.
 
-The endpoint must be defined in .autoprobe.yaml.
-
-By default, GET/HEAD requests run 100 times, while mutating methods
-(POST/PUT/PATCH/DELETE) run once. Override with --requests.`,
+The target must be defined in .autoprobe.yaml under 'endpoints' or 'pages'.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		endpointName := args[0]
+		name := args[0]
 		requests, _ := cmd.Flags().GetInt("requests")
 		concurrency, _ := cmd.Flags().GetInt("concurrency")
 		output, _ := cmd.Flags().GetString("output")
 
-		return runBenchmark(endpointName, requests, concurrency, output)
+		return runBenchmark(name, requests, concurrency, output)
 	},
 }
 
@@ -46,15 +44,42 @@ func init() {
 	benchmarkCmd.Flags().StringVarP(&benchOutput, "output", "o", "", "Output file for results (JSON)")
 }
 
-func runBenchmark(endpointName string, requests, concurrency int, output string) error {
+func runBenchmark(name string, requests, concurrency int, output string) error {
 	// Load config
 	cfg, err := config.LoadDefault()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Get endpoint
-	endpoint, err := cfg.GetEndpoint(endpointName)
+	// Check if it's a page or endpoint
+	if cfg.IsPage(name) {
+		return runPageBenchmark(cfg, name)
+	}
+
+	return runEndpointBenchmark(cfg, name, requests, concurrency, output)
+}
+
+func runPageBenchmark(cfg *config.Config, name string) error {
+	page, err := cfg.GetPage(name)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Benchmarking page: %s\n", name)
+	fmt.Printf("  URL: %s\n", page.URL)
+	fmt.Println("  Loading browser...")
+
+	stats, err := pagebench.Run(name, page)
+	if err != nil {
+		return fmt.Errorf("page benchmark failed: %w", err)
+	}
+
+	pagebench.PrintStats(stats)
+	return nil
+}
+
+func runEndpointBenchmark(cfg *config.Config, name string, requests, concurrency int, output string) error {
+	endpoint, err := cfg.GetEndpoint(name)
 	if err != nil {
 		return err
 	}
@@ -64,7 +89,7 @@ func runBenchmark(endpointName string, requests, concurrency int, output string)
 		requests = benchmark.DefaultRequestsForMethod(endpoint.Method)
 	}
 
-	fmt.Printf("Benchmarking endpoint: %s\n", endpointName)
+	fmt.Printf("Benchmarking endpoint: %s\n", name)
 	fmt.Printf("  URL: %s %s\n", endpoint.Method, endpoint.URL)
 	fmt.Printf("  Requests: %d\n", requests)
 
@@ -76,7 +101,7 @@ func runBenchmark(endpointName string, requests, concurrency int, output string)
 	}
 
 	// Run benchmark
-	stats, err := benchmark.Run(endpointName, endpoint, opts)
+	stats, err := benchmark.Run(name, endpoint, opts)
 	if err != nil {
 		return fmt.Errorf("benchmark failed: %w", err)
 	}

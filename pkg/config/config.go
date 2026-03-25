@@ -15,7 +15,27 @@ type Config struct {
 	Variables map[string]string         `yaml:"variables"`
 	Databases map[string]DatabaseConfig `yaml:"databases"`
 	Endpoints map[string]EndpointConfig `yaml:"endpoints"`
+	Pages     map[string]PageConfig     `yaml:"pages"`
 	Rules     string                    `yaml:"rules"`
+}
+
+// PageConfig represents a page to benchmark (browser-based)
+type PageConfig struct {
+	URL       string            `yaml:"url"`
+	Cookies   []CookieConfig    `yaml:"cookies"`
+	LocalStorage map[string]string `yaml:"localStorage"`
+	Headers   map[string]string `yaml:"headers"`
+	WaitFor   string            `yaml:"wait_for"` // "networkidle", "load", "domcontentloaded", or selector
+}
+
+// CookieConfig represents a browser cookie
+type CookieConfig struct {
+	Name     string `yaml:"name"`
+	Value    string `yaml:"value"`
+	Domain   string `yaml:"domain"`
+	Path     string `yaml:"path"`
+	Secure   bool   `yaml:"secure"`
+	HttpOnly bool   `yaml:"httpOnly"`
 }
 
 // DatabaseConfig represents a database connection
@@ -138,6 +158,21 @@ func (c *Config) GetEndpoint(name string) (*EndpointConfig, error) {
 		return nil, fmt.Errorf("endpoint %q not found in config", name)
 	}
 	return &ep, nil
+}
+
+// GetPage returns the page config by name
+func (c *Config) GetPage(name string) (*PageConfig, error) {
+	pg, ok := c.Pages[name]
+	if !ok {
+		return nil, fmt.Errorf("page %q not found in config", name)
+	}
+	return &pg, nil
+}
+
+// IsPage checks if a name refers to a page (vs endpoint)
+func (c *Config) IsPage(name string) bool {
+	_, ok := c.Pages[name]
+	return ok
 }
 
 // GetDatabase returns the database config by name
