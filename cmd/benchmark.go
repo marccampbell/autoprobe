@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"fmt"
+	"time"
 
+	"github.com/marccampbell/autoprobe/pkg/benchmark"
+	"github.com/marccampbell/autoprobe/pkg/config"
 	"github.com/spf13/cobra"
 )
 
@@ -14,7 +17,10 @@ var benchmarkCmd = &cobra.Command{
 Runs multiple requests against the specified endpoint and reports
 latency statistics (min, max, mean, p50, p95, p99).
 
-The endpoint must be defined in .autoprobe.yaml.`,
+The endpoint must be defined in .autoprobe.yaml.
+
+By default, GET/HEAD requests run 100 times, while mutating methods
+(POST/PUT/PATCH/DELETE) run once. Override with --requests.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		endpointName := args[0]
@@ -35,23 +41,56 @@ var (
 func init() {
 	rootCmd.AddCommand(benchmarkCmd)
 
-	benchmarkCmd.Flags().IntVarP(&benchRequests, "requests", "n", 100, "Number of requests to run")
-	benchmarkCmd.Flags().IntVarP(&benchConcurrency, "concurrency", "c", 10, "Number of concurrent requests")
+	benchmarkCmd.Flags().IntVarP(&benchRequests, "requests", "n", 0, "Number of requests to run (default: 100 for GET, 1 for POST/PUT/PATCH/DELETE)")
+	benchmarkCmd.Flags().IntVarP(&benchConcurrency, "concurrency", "c", 1, "Number of concurrent requests")
 	benchmarkCmd.Flags().StringVarP(&benchOutput, "output", "o", "", "Output file for results (JSON)")
 }
 
 func runBenchmark(endpointName string, requests, concurrency int, output string) error {
-	// TODO: Load config and validate endpoint exists
-	// TODO: Run benchmark
-	// TODO: Report results
-
-	fmt.Printf("Benchmarking endpoint: %s\n", endpointName)
-	fmt.Printf("  Requests: %d\n", requests)
-	fmt.Printf("  Concurrency: %d\n", concurrency)
-	if output != "" {
-		fmt.Printf("  Output: %s\n", output)
+	// Load config
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	fmt.Println("\n[benchmark not yet implemented]")
+	// Get endpoint
+	endpoint, err := cfg.GetEndpoint(endpointName)
+	if err != nil {
+		return err
+	}
+
+	// Determine request count
+	if requests == 0 {
+		requests = benchmark.DefaultRequestsForMethod(endpoint.Method)
+	}
+
+	fmt.Printf("Benchmarking endpoint: %s\n", endpointName)
+	fmt.Printf("  URL: %s %s\n", endpoint.Method, endpoint.URL)
+	fmt.Printf("  Requests: %d\n", requests)
+
+	// Build options
+	opts := benchmark.Options{
+		Requests:    requests,
+		Concurrency: concurrency,
+		Delay:       50 * time.Millisecond,
+	}
+
+	// Run benchmark
+	stats, err := benchmark.Run(endpointName, endpoint, opts)
+	if err != nil {
+		return fmt.Errorf("benchmark failed: %w", err)
+	}
+
+	// Output results
+	benchmark.PrintStats(stats)
+
+	// Write JSON if requested
+	if output != "" {
+		if err := benchmark.WriteJSON(stats, output); err != nil {
+			return err
+		}
+		fmt.Printf("\nResults written to %s\n", output)
+	}
+
 	return nil
 }
