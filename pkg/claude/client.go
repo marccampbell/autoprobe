@@ -169,6 +169,11 @@ func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableT
 				Content:   content,
 				IsError:   result.IsError,
 			})
+			
+			// Log tool use for verbose mode (via callback)
+			if onMessage != nil {
+				onMessage(fmt.Sprintf("\n[TOOL: %s]\n", tu.Name))
+			}
 		}
 
 		// Add tool results to messages
