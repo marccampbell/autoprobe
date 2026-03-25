@@ -90,8 +90,6 @@ func (o *Optimizer) Run(maxIterations int) error {
 			break
 		}
 
-		fmt.Printf("\nHypothesis: %s\n", proposal.Hypothesis)
-		fmt.Printf("Change: %s\n", proposal.Change)
 		fmt.Printf("File: %s\n", proposal.File)
 
 		if o.dryRun {
@@ -244,12 +242,22 @@ RULES:
 	availableTools := tools.GetTools(false) // read-only
 
 	var fullResponse strings.Builder
+	var hypothesisPrinted bool
 	err := o.client.RunWithTools(systemPrompt, userPrompt.String(), availableTools, func(text string) {
-		// Print hypothesis and progress as it comes
-		fmt.Print(text)
 		fullResponse.WriteString(text)
+		// Only print the hypothesis line, nothing else
+		if !hypothesisPrinted && strings.Contains(strings.ToUpper(text), "HYPOTHESIS") {
+			// Extract just the hypothesis line
+			lines := strings.Split(text, "\n")
+			for _, line := range lines {
+				if strings.Contains(strings.ToUpper(line), "HYPOTHESIS") {
+					fmt.Println(strings.TrimSpace(line))
+					hypothesisPrinted = true
+					break
+				}
+			}
+		}
 	})
-	fmt.Println() // newline after streaming
 
 	if err != nil {
 		return nil, false, err
