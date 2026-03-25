@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -10,6 +12,7 @@ import (
 
 // Config represents the .autoprobe.yaml configuration
 type Config struct {
+	Variables map[string]string         `yaml:"variables"`
 	Databases map[string]DatabaseConfig `yaml:"databases"`
 	Endpoints map[string]EndpointConfig `yaml:"endpoints"`
 }
@@ -61,7 +64,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config: %w", err)
 	}
 
-	// Expand environment variables
+	// Expand environment variables (${VAR} syntax)
 	expanded := os.ExpandEnv(string(data))
 
 	var cfg Config
@@ -69,7 +72,55 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
+	// Expand template variables ({{var}} syntax)
+	cfg.expandVariables()
+
 	return &cfg, nil
+}
+
+// expandVariables replaces {{var}} placeholders with values from the variables section
+func (c *Config) expandVariables() {
+	if len(c.Variables) == 0 {
+		return
+	}
+
+	// Pattern matches {{variable_name}}
+	pattern := regexp.MustCompile(`\{\{\s*(\w+)\s*\}\}`)
+
+	expand := func(s string) string {
+		return pattern.ReplaceAllStringFunc(s, func(match string) string {
+			// Extract variable name
+			submatch := pattern.FindStringSubmatch(match)
+			if len(submatch) < 2 {
+				return match
+			}
+			varName := strings.TrimSpace(submatch[1])
+			if val, ok := c.Variables[varName]; ok {
+				return val
+			}
+			return match // Leave unchanged if not found
+		})
+	}
+
+	// Expand in endpoints
+	for name, ep := range c.Endpoints {
+		ep.URL = expand(ep.URL)
+		ep.Body = expand(ep.Body)
+		for k, v := range ep.Headers {
+			ep.Headers[k] = expand(v)
+		}
+		c.Endpoints[name] = ep
+	}
+
+	// Expand in databases
+	for name, db := range c.Databases {
+		db.DSN = expand(db.DSN)
+		db.Host = expand(db.Host)
+		db.User = expand(db.User)
+		db.Password = expand(db.Password)
+		db.Database = expand(db.Database)
+		c.Databases[name] = db
+	}
 }
 
 // LoadDefault loads config from .autoprobe.yaml in the current directory
