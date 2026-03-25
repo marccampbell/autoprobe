@@ -70,17 +70,11 @@ func (o *Optimizer) Run(maxIterations int) error {
 
 		fmt.Printf("\n=== Iteration %d ===\n", o.state.Iteration)
 
-		// Phase 1: Explore and analyze
-		fmt.Println("Analyzing...")
-		analysis, err := o.analyzeEndpoint()
-		if err != nil {
-			fmt.Printf("Analysis failed: %v\n", err)
-			break
-		}
+		// Quick context gathering (fast)
+		context := o.gatherQuickContext()
 
-		// Phase 2: Get proposal based on analysis
-		fmt.Println("Generating proposal...")
-		proposal, done, err := o.getProposal(analysis)
+		// Get proposal with tool access (Claude explores as needed)
+		proposal, done, err := o.getProposalWithTools(context)
 		if err != nil {
 			fmt.Printf("Failed to get proposal: %v\n", err)
 			break
@@ -163,95 +157,110 @@ func (o *Optimizer) runBenchmark() (*benchmark.Stats, error) {
 	return benchmark.Run(o.name, o.endpoint, opts)
 }
 
-// analyzeEndpoint uses tools to explore the codebase and returns analysis text
-func (o *Optimizer) analyzeEndpoint() (string, error) {
-	systemPrompt := `You are a code analyzer. Your job is to explore a codebase to understand an API endpoint's implementation.
+// gatherQuickContext does fast context gathering without LLM
+func (o *Optimizer) gatherQuickContext() string {
+	var context strings.Builder
 
-Use the provided tools to:
-1. Find the route/handler for the endpoint
-2. Read the handler code
-3. Trace calls to services, repositories, database queries
-4. Look for performance issues (N+1 queries, missing indexes, inefficient loops)
-
-After exploring, provide a brief summary of what you found and potential optimizations.
-
-IMPORTANT: 
-- Do NOT use git commands
-- Do NOT modify any files
-- Only read and search`
-
-	userPrompt := fmt.Sprintf(`Analyze this endpoint:
-- Method: %s
-- URL: %s
-
-Find the handler code and trace the implementation. Look for performance bottlenecks.
-`, o.endpoint.Method, o.endpoint.URL)
-
-	// Use read-only tools for analysis
-	availableTools := tools.GetTools(false)
-
-	var analysis strings.Builder
-	err := o.client.RunWithTools(systemPrompt, userPrompt, availableTools, func(text string) {
-		analysis.WriteString(text)
+	// Get file tree (top level only)
+	result := tools.ExecuteTool(tools.ToolUse{
+		Name:  "list_files",
+		Input: map[string]interface{}{"path": "."},
 	})
+	context.WriteString("## Project Structure\n```\n")
+	context.WriteString(result.Content)
+	context.WriteString("\n```\n\n")
 
-	return analysis.String(), err
+	// Grep for the URL path
+	urlPath := extractPath(o.endpoint.URL)
+	if urlPath != "" {
+		result = tools.ExecuteTool(tools.ToolUse{
+			Name: "grep",
+			Input: map[string]interface{}{
+				"pattern": urlPath,
+				"include": "*.go",
+			},
+		})
+		if !result.IsError && result.Content != "No matches found" {
+			context.WriteString("## Route matches\n```\n")
+			context.WriteString(result.Content)
+			context.WriteString("\n```\n\n")
+		}
+	}
+
+	return context.String()
 }
 
-// getProposal asks for a structured optimization proposal
-func (o *Optimizer) getProposal(analysis string) (*Proposal, bool, error) {
-	systemPrompt := `You are a code optimizer. Based on the analysis provided, propose ONE specific code change.
-
-You MUST respond with ONLY valid JSON in this exact format:
-
-{
-  "proposal": {
-    "hypothesis": "Brief explanation of what is slow and why",
-    "change": "Human-readable description of the fix",
-    "file": "path/to/file.go",
-    "old_code": "exact code to replace (must match file exactly)",
-    "new_code": "the optimized replacement"
-  }
+func extractPath(url string) string {
+	if idx := strings.Index(url, "://"); idx != -1 {
+		rest := url[idx+3:]
+		if idx := strings.Index(rest, "/"); idx != -1 {
+			path := rest[idx:]
+			if idx := strings.Index(path, "?"); idx != -1 {
+				path = path[:idx]
+			}
+			return path
+		}
+	}
+	return ""
 }
 
-Or if no optimizations are possible:
+// getProposalWithTools lets Claude explore and propose in one pass
+func (o *Optimizer) getProposalWithTools(context string) (*Proposal, bool, error) {
+	systemPrompt := `You are autoprobe, an AI performance optimizer.
 
-{
-  "done": true,
-  "done_reason": "Why no more optimizations are possible"
-}
+Your task:
+1. First, state your HYPOTHESIS about what might be slow (print this immediately)
+2. Use tools to verify and find the exact code
+3. Output a JSON proposal with the fix
 
-Rules:
+When you have a proposal ready, output EXACTLY this JSON format (and nothing else after):
+
+{"proposal":{"hypothesis":"...","change":"...","file":"...","old_code":"...","new_code":"..."}}
+
+Or if done:
+
+{"done":true,"done_reason":"..."}
+
+RULES:
+- State hypothesis FIRST before using tools
+- old_code must match the file EXACTLY
 - Propose ONE change only
-- old_code must match EXACTLY (including whitespace)
-- Focus on high-impact: N+1 queries, missing indexes, inefficient algorithms
-- Do NOT propose changes already tried`
+- Focus on: N+1 queries, missing indexes, inefficient loops`
 
 	if o.cfg.Rules != "" {
 		systemPrompt += "\n\nUser rules:\n" + o.cfg.Rules
 	}
 
 	var userPrompt strings.Builder
-	userPrompt.WriteString("## Analysis Results\n\n")
-	userPrompt.WriteString(analysis)
-	userPrompt.WriteString("\n\n")
+	userPrompt.WriteString(fmt.Sprintf("## Target\n- %s %s\n\n", o.endpoint.Method, o.endpoint.URL))
 	userPrompt.WriteString(o.state.FormatSummary())
 	userPrompt.WriteString("\n")
 	userPrompt.WriteString(o.state.FormatHistory())
-	userPrompt.WriteString("\n\nBased on this analysis, propose ONE optimization. Respond with JSON only.")
+	userPrompt.WriteString("\n")
+	userPrompt.WriteString(context)
+	userPrompt.WriteString("\nState your hypothesis, then investigate and propose a fix.")
 
-	response, err := o.client.Complete(systemPrompt, userPrompt.String())
+	availableTools := tools.GetTools(false) // read-only
+
+	var fullResponse strings.Builder
+	err := o.client.RunWithTools(systemPrompt, userPrompt.String(), availableTools, func(text string) {
+		// Print hypothesis and progress as it comes
+		fmt.Print(text)
+		fullResponse.WriteString(text)
+	})
+	fmt.Println() // newline after streaming
+
 	if err != nil {
 		return nil, false, err
 	}
 
-	// Parse JSON response
-	var proposalResp ProposalResponse
-	jsonStr := extractJSON(response)
+	// Extract JSON from the full response
+	jsonStr := extractJSON(fullResponse.String())
 	if jsonStr == "" {
-		return nil, false, fmt.Errorf("no JSON found in response")
+		return nil, false, fmt.Errorf("no JSON proposal found")
 	}
 
+	var proposalResp ProposalResponse
 	if err := json.Unmarshal([]byte(jsonStr), &proposalResp); err != nil {
 		return nil, false, fmt.Errorf("invalid JSON: %w", err)
 	}

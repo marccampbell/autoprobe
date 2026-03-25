@@ -133,7 +133,6 @@ func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableT
 				if onMessage != nil {
 					onMessage(block.Text)
 				}
-				// Don't print intermediate text, just collect it
 			} else if block.Type == "tool_use" {
 				toolUses = append(toolUses, tools.ToolUse{
 					ID:    block.ID,
