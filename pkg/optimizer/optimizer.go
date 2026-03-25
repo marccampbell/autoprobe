@@ -21,10 +21,11 @@ type Optimizer struct {
 	state    *RunState
 	client   *claude.Client
 	dryRun   bool
+	verbose  bool
 }
 
 // New creates a new optimizer
-func New(cfg *config.Config, endpointName string, endpoint *config.EndpointConfig, dryRun bool) (*Optimizer, error) {
+func New(cfg *config.Config, endpointName string, endpoint *config.EndpointConfig, dryRun, verbose bool) (*Optimizer, error) {
 	client, err := claude.NewClient()
 	if err != nil {
 		return nil, err
@@ -36,6 +37,7 @@ func New(cfg *config.Config, endpointName string, endpoint *config.EndpointConfi
 		name:     endpointName,
 		client:   client,
 		dryRun:   dryRun,
+		verbose:  verbose,
 	}, nil
 }
 
@@ -254,19 +256,28 @@ RULES:
 	var hypothesisPrinted bool
 	err := o.client.RunWithTools(systemPrompt, userPrompt.String(), availableTools, func(text string) {
 		fullResponse.WriteString(text)
-		// Only print the hypothesis line, nothing else
-		if !hypothesisPrinted && strings.Contains(strings.ToUpper(text), "HYPOTHESIS") {
-			// Extract just the hypothesis line
-			lines := strings.Split(text, "\n")
-			for _, line := range lines {
-				if strings.Contains(strings.ToUpper(line), "HYPOTHESIS") {
-					fmt.Println(strings.TrimSpace(line))
-					hypothesisPrinted = true
-					break
+		
+		if o.verbose {
+			// In verbose mode, print everything
+			fmt.Print(text)
+		} else {
+			// Only print the hypothesis line
+			if !hypothesisPrinted && strings.Contains(strings.ToUpper(text), "HYPOTHESIS") {
+				lines := strings.Split(text, "\n")
+				for _, line := range lines {
+					if strings.Contains(strings.ToUpper(line), "HYPOTHESIS") {
+						fmt.Println(strings.TrimSpace(line))
+						hypothesisPrinted = true
+						break
+					}
 				}
 			}
 		}
 	})
+	
+	if o.verbose {
+		fmt.Println("\n--- END LLM OUTPUT ---")
+	}
 
 	if err != nil {
 		return nil, false, err

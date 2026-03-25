@@ -31,14 +31,16 @@ Requires ANTHROPIC_API_KEY to be set.`,
 		endpointName := args[0]
 		maxIterations, _ := cmd.Flags().GetInt("max-iterations")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		verbose, _ := cmd.Flags().GetBool("verbose")
 
-		return runOptimize(endpointName, maxIterations, dryRun)
+		return runOptimize(endpointName, maxIterations, dryRun, verbose)
 	},
 }
 
 var (
 	runMaxIterations int
 	runDryRun        bool
+	runVerbose       bool
 )
 
 func init() {
@@ -46,9 +48,10 @@ func init() {
 
 	runCmd.Flags().IntVar(&runMaxIterations, "max-iterations", 0, "Maximum optimization iterations (0 = until target met)")
 	runCmd.Flags().BoolVar(&runDryRun, "dry-run", false, "Show proposed changes without applying them")
+	runCmd.Flags().BoolVar(&runVerbose, "verbose", false, "Show full LLM output for debugging")
 }
 
-func runOptimize(endpointName string, maxIterations int, dryRun bool) error {
+func runOptimize(endpointName string, maxIterations int, dryRun, verbose bool) error {
 	// Load config
 	cfg, err := config.LoadDefault()
 	if err != nil {
@@ -73,7 +76,7 @@ func runOptimize(endpointName string, maxIterations int, dryRun bool) error {
 		fmt.Println("  Rules: configured")
 	}
 
-	opt, err := optimizer.New(cfg, endpointName, endpoint, dryRun)
+	opt, err := optimizer.New(cfg, endpointName, endpoint, dryRun, verbose)
 	if err != nil {
 		return err
 	}
