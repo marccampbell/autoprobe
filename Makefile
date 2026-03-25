@@ -9,10 +9,11 @@ LDFLAGS := -ldflags "-X github.com/marccampbell/autoprobe/cmd.Version=$(VERSION)
 	-X github.com/marccampbell/autoprobe/cmd.BuildTime=$(BUILD_TIME)"
 
 build:
-	go build $(LDFLAGS) -o autoprobe .
+	@mkdir -p bin
+	go build $(LDFLAGS) -o bin/autoprobe .
 
 clean:
-	rm -f autoprobe
+	rm -rf bin/
 
 test:
 	go test -v ./...
