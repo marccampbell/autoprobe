@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/marccampbell/autoprobe/pkg/config"
@@ -94,26 +95,31 @@ func Run(name string, page *config.PageConfig) (*PageStats, error) {
 		pg.SetExtraHTTPHeaders(page.Headers)
 	}
 
-	// Track requests
+	// Track requests (need mutex since callbacks run concurrently)
 	var requests []RequestInfo
+	var mu sync.Mutex
 	requestStart := make(map[string]time.Time)
 
 	pg.OnRequest(func(req playwright.Request) {
+		mu.Lock()
 		requestStart[req.URL()] = time.Now()
+		mu.Unlock()
 	})
 
 	pg.OnResponse(func(resp playwright.Response) {
 		url := resp.URL()
+		mu.Lock()
 		start, ok := requestStart[url]
 		if !ok {
 			start = time.Now()
 		}
+		mu.Unlock()
 		
 		req := resp.Request()
 
 		// Note: Can't call AllHeaders() or Body() here - causes deadlock
 		// Size will be 0; could parse from response if needed later
-		requests = append(requests, RequestInfo{
+		info := RequestInfo{
 			URL:          url,
 			Method:       req.Method(),
 			Status:       resp.Status(),
@@ -121,7 +127,10 @@ func Run(name string, page *config.PageConfig) (*PageStats, error) {
 			Duration:     time.Since(start),
 			Size:         0,
 			ResourceType: req.ResourceType(),
-		})
+		}
+		mu.Lock()
+		requests = append(requests, info)
+		mu.Unlock()
 	})
 
 	// If localStorage/sessionStorage needed, navigate to origin first to set it
@@ -212,7 +221,7 @@ func PrintStats(stats *PageStats) {
 	fmt.Printf("  Time to First Byte: %s\n", stats.TTFB.Round(time.Millisecond))
 	fmt.Printf("  Fully Loaded:       %s\n", stats.FullyLoaded.Round(time.Millisecond))
 	
-	fmt.Printf("\nRequests: %d total (%.1f KB)\n", stats.TotalRequests, float64(stats.TotalSize)/1024)
+	fmt.Printf("\nRequests: %d total\n", stats.TotalRequests)
 	
 	// By type
 	if len(stats.ByType) > 0 {
@@ -221,10 +230,33 @@ func PrintStats(stats *PageStats) {
 			fmt.Printf("  %-12s %d\n", typ, count)
 		}
 	}
+
+	// XHR/Fetch requests with timing
+	var xhrRequests []RequestInfo
+	for _, req := range stats.Requests {
+		if req.ResourceType == "xhr" || req.ResourceType == "fetch" {
+			xhrRequests = append(xhrRequests, req)
+		}
+	}
+	if len(xhrRequests) > 0 {
+		// Sort by duration descending
+		sort.Slice(xhrRequests, func(i, j int) bool {
+			return xhrRequests[i].Duration > xhrRequests[j].Duration
+		})
+		fmt.Printf("\nXHR/Fetch Requests (%d):\n", len(xhrRequests))
+		for _, req := range xhrRequests {
+			displayURL := req.URL
+			if len(displayURL) > 55 {
+				displayURL = displayURL[:52] + "..."
+			}
+			status := fmt.Sprintf("%d", req.Status)
+			fmt.Printf("  %3s %6s  %s\n", status, req.Duration.Round(time.Millisecond), displayURL)
+		}
+	}
 	
 	// Duplicates
 	if len(stats.Duplicates) > 0 {
-		fmt.Printf("\n⚠ Duplicate Requests (%d):\n", len(stats.Duplicates))
+		fmt.Printf("\n⚠ Duplicate Requests (%d unique URLs called multiple times):\n", len(stats.Duplicates))
 		for url, count := range stats.Duplicates {
 			// Truncate long URLs
 			displayURL := url
