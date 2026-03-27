@@ -145,6 +145,26 @@ func (c *Config) expandVariables() {
 		db.Database = expand(db.Database)
 		c.Databases[name] = db
 	}
+
+	// Expand in pages
+	for name, pg := range c.Pages {
+		pg.URL = expand(pg.URL)
+		pg.WaitFor = expand(pg.WaitFor)
+		for k, v := range pg.Headers {
+			pg.Headers[k] = expand(v)
+		}
+		for k, v := range pg.LocalStorage {
+			pg.LocalStorage[k] = expand(v)
+		}
+		for k, v := range pg.SessionStorage {
+			pg.SessionStorage[k] = expand(v)
+		}
+		for i, cookie := range pg.Cookies {
+			pg.Cookies[i].Value = expand(cookie.Value)
+			pg.Cookies[i].Domain = expand(cookie.Domain)
+		}
+		c.Pages[name] = pg
+	}
 }
 
 // LoadDefault loads config from .autoprobe.yaml in the current directory
