@@ -110,21 +110,16 @@ func Run(name string, page *config.PageConfig) (*PageStats, error) {
 		}
 		
 		req := resp.Request()
-		
-		// Get size from headers (don't call Body() in callback - causes deadlock)
-		headers, _ := resp.AllHeaders()
-		var size int64
-		if cl, ok := headers["content-length"]; ok {
-			fmt.Sscanf(cl, "%d", &size)
-		}
 
+		// Note: Can't call AllHeaders() or Body() here - causes deadlock
+		// Size will be 0; could parse from response if needed later
 		requests = append(requests, RequestInfo{
 			URL:          url,
 			Method:       req.Method(),
 			Status:       resp.Status(),
 			StartTime:    start,
 			Duration:     time.Since(start),
-			Size:         size,
+			Size:         0,
 			ResourceType: req.ResourceType(),
 		})
 	})
