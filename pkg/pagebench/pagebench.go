@@ -199,9 +199,10 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 		return nil, fmt.Errorf("failed to navigate: %w", err)
 	}
 	
-	// Wait for network to truly settle - SPAs fire XHR after initial load
-	// DEBUG: Just wait 10 seconds to see if we catch all requests
-	time.Sleep(10 * time.Second)
+	// Wait for network to settle
+	pg.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+		State: playwright.LoadStateNetworkidle,
+	})
 	
 	fullyLoaded := time.Since(pageStart)
 
