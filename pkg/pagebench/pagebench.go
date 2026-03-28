@@ -2,6 +2,7 @@ package pagebench
 
 import (
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -38,8 +39,14 @@ type PageStats struct {
 
 // Run captures and analyzes a page load
 func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error) {
-	// Install playwright browsers if needed
-	if err := playwright.Install(); err != nil {
+	// Install playwright browsers if needed (suppress noisy output)
+	installOpts := &playwright.RunOptions{
+		Browsers: []string{"chromium"},
+		Verbose:  false,
+		Stdout:   io.Discard,
+		Stderr:   io.Discard,
+	}
+	if err := playwright.Install(installOpts); err != nil {
 		return nil, fmt.Errorf("failed to install playwright: %w", err)
 	}
 
