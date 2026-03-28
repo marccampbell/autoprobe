@@ -69,10 +69,14 @@ func GetTools(allowWrite bool) []Tool {
 				"properties": map[string]interface{}{
 					"pattern": map[string]interface{}{
 						"type":        "string",
-						"description": "Glob pattern (required). Examples: '**/*.go', 'src/**/*.ts', 'vendor-web/**/*.tsx'",
+						"description": "Glob pattern. Examples: '**/*.go', 'src/**/*.ts', 'vendor-web/**/*.tsx'",
+					},
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Alias for pattern (use pattern instead)",
 					},
 				},
-				"required": []string{"pattern"},
+				"required": []string{},
 			},
 		},
 		{
