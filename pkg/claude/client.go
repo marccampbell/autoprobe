@@ -117,6 +117,7 @@ func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableT
 	totalInputTokens := 0
 	totalOutputTokens := 0
 	maxTurns := 30 // Allow plenty of exploration per iteration
+	nudgeTurn := 15 // Remind to output JSON after this many turns
 
 	for turn := 0; turn < maxTurns; turn++ {
 		resp, err := c.sendRequest(systemPrompt, messages, availableTools)
@@ -181,6 +182,16 @@ func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableT
 			Role:    "user",
 			Content: toolResults,
 		})
+		
+		// Nudge Claude to produce output after nudgeTurn
+		if turn == nudgeTurn {
+			messages = append(messages, Message{
+				Role: "user",
+				Content: []ContentBlock{
+					{Type: "text", Text: "You've done enough investigation. Please output your JSON proposal now."},
+				},
+			})
+		}
 	}
 	
 	return nil // Max turns reached
