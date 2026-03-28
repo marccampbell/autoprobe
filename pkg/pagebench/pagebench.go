@@ -175,26 +175,8 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	}
 	
 	// Wait for network to truly settle - SPAs fire XHR after initial load
-	// Keep waiting until no new requests for 1 second
-	lastRequestCount := 0
-	stableCount := 0
-	for stableCount < 3 {
-		pg.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-			State: playwright.LoadStateNetworkidle,
-		})
-		time.Sleep(500 * time.Millisecond)
-		
-		mu.Lock()
-		currentCount := len(requests)
-		mu.Unlock()
-		
-		if currentCount == lastRequestCount {
-			stableCount++
-		} else {
-			stableCount = 0
-			lastRequestCount = currentCount
-		}
-	}
+	// DEBUG: Just wait 10 seconds to see if we catch all requests
+	time.Sleep(10 * time.Second)
 	
 	fullyLoaded := time.Since(pageStart)
 
