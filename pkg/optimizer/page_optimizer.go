@@ -95,14 +95,15 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 	}
 
 	// Main optimization loop
+	retries := 0
+	maxRetries := 3
 	for {
-		o.state.Iteration++
-
-		if maxIterations > 0 && o.state.Iteration > maxIterations {
+		if maxIterations > 0 && o.state.Iteration >= maxIterations {
 			fmt.Printf("\n=== Reached max iterations (%d) ===\n", maxIterations)
 			break
 		}
 
+		o.state.Iteration++
 		fmt.Printf("\n=== Iteration %d ===\n", o.state.Iteration)
 
 		// Gather context about the page and slow requests
@@ -111,9 +112,16 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 		// Get proposal
 		proposal, done, err := o.getProposalWithTools(context)
 		if err != nil {
-			fmt.Printf("Failed to get proposal: %v (retrying)\n", err)
+			fmt.Printf("Failed to get proposal: %v\n", err)
+			retries++
+			if retries >= maxRetries {
+				fmt.Printf("Max retries (%d) reached, stopping\n", maxRetries)
+				break
+			}
+			o.state.Iteration-- // Don't count failed attempts
 			continue
 		}
+		retries = 0 // Reset on success
 
 		if done {
 			fmt.Println("No more optimizations identified.")
@@ -336,7 +344,12 @@ RULES:
 	// Extract JSON from response
 	jsonStr := extractJSON(fullResponse.String())
 	if jsonStr == "" {
-		return nil, false, fmt.Errorf("no JSON proposal found")
+		// Debug: show what we got
+		response := fullResponse.String()
+		if len(response) > 500 {
+			response = response[len(response)-500:]
+		}
+		return nil, false, fmt.Errorf("no JSON proposal found. Last 500 chars of response:\n%s", response)
 	}
 
 	jsonStr = fixJSONEscaping(jsonStr)
