@@ -280,9 +280,14 @@ func (o *PageOptimizer) getProposal(codeContext string, slowRequests []pagebench
 
 Your task: Find ONE client-side optimization to reduce slow/redundant XHR requests.
 
+IMPORTANT: If there are previous attempts listed, you MUST propose something DIFFERENT.
+- Don't modify the same file with a similar change
+- Don't propose the inverse of a previous attempt
+- Look for a completely different optimization opportunity
+
 Common issues to look for:
 1. Redundant API calls - same endpoint called multiple times
-2. useEffect with missing/wrong deps causing re-fetches
+2. useEffect with missing/wrong deps causing re-fetches  
 3. Missing React Query/SWR caching
 4. Sequential requests that could be parallel
 5. Components re-rendering and triggering unnecessary fetches
@@ -295,7 +300,7 @@ You have tools to read files and explore code. Use them efficiently:
 When you find an optimization, output JSON:
 {"proposal":{"hypothesis":"what's wrong","change":"how to fix it","file":"path/to/file.tsx","old_code":"exact code to replace","new_code":"fixed code"}}
 
-If no optimization found:
+If no NEW optimization found (you've tried everything reasonable):
 {"done":true,"done_reason":"why"}
 
 CRITICAL:
@@ -306,17 +311,18 @@ CRITICAL:
 
 	var userPrompt strings.Builder
 	
-	// Add history of previous attempts
+	// Add history of previous attempts (be very explicit to avoid repeats)
 	if len(o.state.Attempts) > 0 {
-		userPrompt.WriteString("## Previous Attempts (don't repeat these)\n")
-		for _, a := range o.state.Attempts {
-			status := "DISCARDED"
+		userPrompt.WriteString("## PREVIOUS ATTEMPTS - DO NOT REPEAT THESE\n")
+		userPrompt.WriteString("You have already tried these optimizations. Find something DIFFERENT.\n\n")
+		for i, a := range o.state.Attempts {
+			status := "DISCARDED (didn't help)"
 			if a.Kept {
 				status = "KEPT"
 			}
-			userPrompt.WriteString(fmt.Sprintf("- [%s] %s: %s\n", status, a.File, a.Hypothesis))
+			userPrompt.WriteString(fmt.Sprintf("%d. [%s] File: %s\n   Hypothesis: %s\n   Change: %s\n\n", 
+				i+1, status, a.File, a.Hypothesis, a.Change))
 		}
-		userPrompt.WriteString("\n")
 	}
 
 	// Add slow requests
