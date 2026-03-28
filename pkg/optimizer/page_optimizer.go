@@ -56,8 +56,11 @@ func NewPageOptimizer(cfg *config.Config, pageName string, page *config.PageConf
 		return nil, err
 	}
 
-	// Fast client for exploration (optional - falls back to Claude if not available)
-	fastClient, _ := fireworks.NewClient()
+	// Fast client for exploration (required for page optimization)
+	fastClient, err := fireworks.NewClient()
+	if err != nil {
+		return nil, fmt.Errorf("page optimization requires Fireworks API: %w\nSet FIREWORKS_API_KEY environment variable", err)
+	}
 
 	return &PageOptimizer{
 		cfg:        cfg,
@@ -325,13 +328,9 @@ Be concise. Focus on findings, not narration.`
 		}
 	}
 
-	// Use fast client if available, otherwise fall back to Claude
+	// Use fast client (Kimi K2.5) for exploration
 	var err error
-	if o.fastClient != nil {
-		err = o.fastClient.RunWithTools(explorationPrompt, userPrompt.String(), availableTools, onMessage, onToolUse)
-	} else {
-		err = o.client.RunWithTools(explorationPrompt, userPrompt.String(), availableTools, onMessage, onToolUse)
-	}
+	err = o.fastClient.RunWithTools(explorationPrompt, userPrompt.String(), availableTools, onMessage, onToolUse)
 	
 	if err != nil {
 		return nil, false, err
