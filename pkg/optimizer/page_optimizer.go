@@ -99,17 +99,17 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 	maxRetries := 3
 	for {
 		if maxIterations > 0 && o.state.Iteration >= maxIterations {
-			fmt.Printf("\n=== Reached max iterations (%d) ===\n", maxIterations)
+			fmt.Printf("\n=== Completed %d iterations ===\n", maxIterations)
 			break
 		}
 
 		o.state.Iteration++
-		fmt.Printf("\n=== Iteration %d ===\n", o.state.Iteration)
 
 		// Gather context about the page and slow requests
 		context := o.gatherContext(slowRequests)
 
-		// Get proposal
+		// Get proposal (Claude investigates and proposes)
+		fmt.Printf("\n=== Investigating... ===\n")
 		proposal, done, err := o.getProposalWithTools(context)
 		if err != nil {
 			fmt.Printf("Failed to get proposal: %v\n", err)
@@ -124,16 +124,19 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 		retries = 0 // Reset on success
 
 		if done {
-			fmt.Println("No more optimizations identified.")
+			fmt.Println("\nNo more optimizations identified.")
 			break
 		}
 
 		if proposal == nil {
 			fmt.Println("No proposal returned (retrying)")
+			o.state.Iteration--
 			continue
 		}
 
+		fmt.Printf("\n=== Iteration %d ===\n", o.state.Iteration)
 		fmt.Printf("Hypothesis: %s\n", proposal.Hypothesis)
+		fmt.Printf("Change: %s\n", proposal.Change)
 		fmt.Printf("File: %s\n", proposal.File)
 
 		if o.dryRun {
@@ -315,27 +318,13 @@ RULES:
 	availableTools := tools.GetTools(false) // read-only
 
 	var fullResponse strings.Builder
-	var hypothesisPrinted bool
 	
 	onMessage := func(text string) {
 		fullResponse.WriteString(text)
 		
+		// Only print in verbose mode - hypothesis comes from the JSON proposal
 		if o.verbose {
 			fmt.Print(text)
-		} else {
-			// Print the first substantive line as the hypothesis
-			if !hypothesisPrinted {
-				lines := strings.Split(text, "\n")
-				for _, line := range lines {
-					trimmed := strings.TrimSpace(line)
-					// Skip empty lines and JSON
-					if trimmed != "" && !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
-						fmt.Println(trimmed)
-						hypothesisPrinted = true
-						break
-					}
-				}
-			}
 		}
 	}
 	
