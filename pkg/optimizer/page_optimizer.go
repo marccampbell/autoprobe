@@ -266,18 +266,18 @@ func (o *PageOptimizer) gatherContext(slowRequests []pagebench.RequestInfo) stri
 func (o *PageOptimizer) getProposalWithTools(context string) (*Proposal, bool, error) {
 	systemPrompt := `You are autoprobe, an AI performance optimizer for web pages.
 
-Your task is to optimize page load performance by:
-1. Analyzing slow XHR/fetch requests
-2. Looking at BOTH client-side code (React, etc.) AND server-side code
-3. Proposing optimizations to either side
+IMPORTANT: You must output a JSON proposal within 5 tool calls. Do not over-explore.
 
-Types of optimizations to consider:
-- CLIENT: Reduce unnecessary API calls, batch requests, add caching, lazy load
-- CLIENT: Optimize React rendering, reduce re-renders that trigger fetches
-- SERVER: Optimize database queries, add indexes, reduce N+1 queries
-- SERVER: Add caching, optimize serialization, reduce response size
+Your task:
+1. State your hypothesis in one line
+2. Use 2-4 tool calls to find the relevant code
+3. Output a JSON proposal
 
-OUTPUT FORMAT (must be valid JSON, nothing after):
+Types of optimizations:
+- CLIENT: Reduce API calls, batch requests, lazy load
+- SERVER: Optimize queries, add indexes, fix N+1
+
+OUTPUT FORMAT (must be valid JSON at the end):
 
 {"proposal":{"hypothesis":"...","change":"...","file":"...","old_code":"exact code from file","new_code":"optimized code"}}
 
@@ -286,10 +286,10 @@ Or if no optimization found:
 {"done":true,"done_reason":"..."}
 
 RULES:
-- old_code must match file EXACTLY (copy/paste from read_file output)
-- ONE change only per proposal
-- Can modify client OR server code
-- No narration text, just hypothesis then tools then JSON`
+- old_code must match file EXACTLY
+- ONE change only
+- Output JSON after max 5 tool calls
+- If you haven't found enough info in 5 calls, make your best proposal anyway`
 
 	if o.cfg.Rules != "" {
 		systemPrompt += "\n\nUser rules:\n" + o.cfg.Rules
