@@ -300,22 +300,28 @@ func (o *PageOptimizer) getProposalWithTools(context string) (*Proposal, bool, e
 	// Phase 1: Fast exploration with Kimi K2.5 (if available)
 	// Phase 2: Proposal generation with Claude
 	
-	explorationPrompt := `You are a code explorer. Your job is to investigate slow XHR requests and summarize findings.
+	explorationPrompt := `You are a code explorer. Use the provided tools to investigate the codebase.
 
-TASK: Find the client-side code responsible for slow/redundant XHR requests.
+TASK: Find client-side code making slow/redundant XHR requests.
+
+WORKFLOW:
+1. Use grep tool to search for API paths in the slow requests
+2. Use read_file to examine the matching components
+3. Use list_files or glob if you need to find related files
+4. Output a summary of what you found
 
 Look for:
 - React components making these API calls
 - useEffect hooks triggering fetches
-- Redux actions/thunks making requests
-- Any obvious issues (redundant calls, missing deps, no caching)
+- Redux actions/thunks
+- Redundant calls, missing deps, no caching
 
-Use tools to explore, then OUTPUT A SUMMARY of what you found:
-- Which files contain the relevant code
-- What patterns you see (redundant calls, waterfalls, etc.)
-- Specific code snippets that could be optimized
+IMPORTANT: You MUST use tools to explore. Do not just describe what you would do.
 
-Be concise. Focus on findings, not narration.`
+After exploring, summarize:
+- Files containing relevant code
+- Code snippets that could be optimized
+- What client-side issues you found`
 
 	var userPrompt strings.Builder
 	userPrompt.WriteString(o.formatHistory())
