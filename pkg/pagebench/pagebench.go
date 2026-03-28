@@ -3,7 +3,6 @@ package pagebench
 import (
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -109,18 +108,19 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	// Use request pointer address as unique key to handle duplicate URLs
 	requestStart := make(map[playwright.Request]time.Time)
 	
-	// Capture console messages
-	pg.OnConsole(func(msg playwright.ConsoleMessage) {
-		msgType := msg.Type()
-		if msgType == "error" || msgType == "warning" {
-			fmt.Printf("  [CONSOLE %s] %s\n", strings.ToUpper(msgType), msg.Text())
-		}
-	})
-	
-	// Capture page errors
-	pg.OnPageError(func(err error) {
-		fmt.Printf("  [PAGE ERROR] %s\n", err.Error())
-	})
+	// Capture console messages (only in verbose mode)
+	if verbose {
+		pg.OnConsole(func(msg playwright.ConsoleMessage) {
+			msgType := msg.Type()
+			if msgType == "error" || msgType == "warning" {
+				fmt.Printf("  [CONSOLE %s] %s\n", strings.ToUpper(msgType), msg.Text())
+			}
+		})
+		
+		pg.OnPageError(func(err error) {
+			fmt.Printf("  [PAGE ERROR] %s\n", err.Error())
+		})
+	}
 
 	// Listen at context level to catch all requests including from workers/subframes
 	context.OnRequest(func(req playwright.Request) {
@@ -137,10 +137,7 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 		req := resp.Request()
 		resType := req.ResourceType()
 		
-		// DEBUG: Always log XHR/fetch to see what we're catching
-		if resType == "xhr" || resType == "fetch" {
-			fmt.Printf("  [XHR] %d %s %s\n", resp.Status(), req.Method(), url)
-		} else if verbose {
+		if verbose {
 			fmt.Printf("  [DEBUG] Response: %d %s (%s)\n", resp.Status(), url, resType)
 		}
 		
@@ -172,35 +169,18 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	if len(page.LocalStorage) > 0 || len(page.SessionStorage) > 0 {
 		// Navigate to origin to establish context
 		origin := extractOrigin(page.URL)
-		fmt.Printf("  Setting up storage at origin: %s\n", origin)
 		pg.Goto(origin, playwright.PageGotoOptions{
 			WaitUntil: playwright.WaitUntilStateCommit,
 		})
 		
 		// Set localStorage
 		for key, value := range page.LocalStorage {
-			fmt.Printf("  Setting localStorage[%s] (len=%d)\n", key, len(value))
-			if len(value) == 0 {
-				fmt.Printf("  WARNING: value is empty!\n")
-			}
 			pg.Evaluate(fmt.Sprintf(`localStorage.setItem(%q, %q)`, key, value))
 		}
 		
 		// Set sessionStorage
 		for key, value := range page.SessionStorage {
-			fmt.Printf("  Setting sessionStorage[%s] = %s...\n", key, truncate(value, 50))
 			pg.Evaluate(fmt.Sprintf(`sessionStorage.setItem(%q, %q)`, key, value))
-		}
-		
-		// Verify it was set
-		for key := range page.LocalStorage {
-			result, _ := pg.Evaluate(fmt.Sprintf(`localStorage.getItem(%q)`, key))
-			if result == nil {
-				fmt.Printf("  WARNING: localStorage[%s] is nil after setting!\n", key)
-			} else {
-				str := fmt.Sprintf("%v", result)
-				fmt.Printf("  Verified localStorage[%s] (len=%d)\n", key, len(str))
-			}
 		}
 	}
 
@@ -220,15 +200,7 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	
 	fullyLoaded := time.Since(pageStart)
 	
-	// DEBUG: Take a screenshot to see what the page looks like
-	screenshot, err := pg.Screenshot(playwright.PageScreenshotOptions{
-		FullPage: playwright.Bool(true),
-	})
-	if err == nil {
-		screenshotPath := "/tmp/autoprobe-debug.png"
-		os.WriteFile(screenshotPath, screenshot, 0644)
-		fmt.Printf("  DEBUG: Screenshot saved to %s\n", screenshotPath)
-	}
+
 
 
 
