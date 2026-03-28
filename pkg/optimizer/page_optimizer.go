@@ -264,32 +264,26 @@ func (o *PageOptimizer) gatherContext(slowRequests []pagebench.RequestInfo) stri
 }
 
 func (o *PageOptimizer) getProposalWithTools(context string) (*Proposal, bool, error) {
-	systemPrompt := `You are autoprobe, an AI performance optimizer for web pages.
+	systemPrompt := `You are autoprobe, an AI performance optimizer.
 
-IMPORTANT: You must output a JSON proposal within 5 tool calls. Do not over-explore.
+TASK: Find ONE optimization for the slow XHR requests and output a JSON proposal.
 
-Your task:
-1. State your hypothesis in one line
-2. Use 2-4 tool calls to find the relevant code
-3. Output a JSON proposal
+STEPS:
+1. Briefly state hypothesis
+2. Use tools to find the code (grep, read_file)
+3. Output JSON proposal with the fix
 
-Types of optimizations:
-- CLIENT: Reduce API calls, batch requests, lazy load
-- SERVER: Optimize queries, add indexes, fix N+1
+OUTPUT (required - you MUST output this JSON):
+{"proposal":{"hypothesis":"...","change":"...","file":"path/to/file","old_code":"exact match","new_code":"fixed code"}}
 
-OUTPUT FORMAT (must be valid JSON at the end):
-
-{"proposal":{"hypothesis":"...","change":"...","file":"...","old_code":"exact code from file","new_code":"optimized code"}}
-
-Or if no optimization found:
-
+OR if truly nothing to optimize:
 {"done":true,"done_reason":"..."}
 
-RULES:
-- old_code must match file EXACTLY
+CRITICAL RULES:
+- Your response MUST end with valid JSON
+- old_code must be EXACT copy from the file
 - ONE change only
-- Output JSON after max 5 tool calls
-- If you haven't found enough info in 5 calls, make your best proposal anyway`
+- No markdown, no explanation after the JSON`
 
 	if o.cfg.Rules != "" {
 		systemPrompt += "\n\nUser rules:\n" + o.cfg.Rules
