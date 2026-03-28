@@ -300,11 +300,14 @@ RULES:
 		if o.verbose {
 			fmt.Print(text)
 		} else {
-			if !hypothesisPrinted && strings.Contains(strings.ToUpper(text), "HYPOTHESIS") {
+			// Print the first substantive line as the hypothesis
+			if !hypothesisPrinted {
 				lines := strings.Split(text, "\n")
 				for _, line := range lines {
-					if strings.Contains(strings.ToUpper(line), "HYPOTHESIS") {
-						fmt.Println(strings.TrimSpace(line))
+					trimmed := strings.TrimSpace(line)
+					// Skip empty lines and JSON
+					if trimmed != "" && !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+						fmt.Println(trimmed)
 						hypothesisPrinted = true
 						break
 					}
