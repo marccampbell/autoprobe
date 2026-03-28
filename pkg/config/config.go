@@ -88,12 +88,15 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config: %w", err)
 	}
 
-	// Expand environment variables (${VAR} syntax)
-	expanded := os.ExpandEnv(string(data))
-
 	var cfg Config
-	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	// Expand environment variables in the variables section first
+	// This happens AFTER yaml parsing to avoid JSON breaking YAML
+	for k, v := range cfg.Variables {
+		cfg.Variables[k] = os.ExpandEnv(v)
 	}
 
 	// Expand template variables ({{var}} syntax)
