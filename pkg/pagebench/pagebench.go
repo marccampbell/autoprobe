@@ -165,7 +165,10 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 		
 		// Set localStorage
 		for key, value := range page.LocalStorage {
-			fmt.Printf("  Setting localStorage[%s] = %s...\n", key, truncate(value, 50))
+			fmt.Printf("  Setting localStorage[%s] (len=%d)\n", key, len(value))
+			if len(value) == 0 {
+				fmt.Printf("  WARNING: value is empty!\n")
+			}
 			pg.Evaluate(fmt.Sprintf(`localStorage.setItem(%q, %q)`, key, value))
 		}
 		
@@ -181,7 +184,8 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 			if result == nil {
 				fmt.Printf("  WARNING: localStorage[%s] is nil after setting!\n", key)
 			} else {
-				fmt.Printf("  Verified localStorage[%s] = %s...\n", key, truncate(fmt.Sprintf("%v", result), 50))
+				str := fmt.Sprintf("%v", result)
+				fmt.Printf("  Verified localStorage[%s] (len=%d)\n", key, len(str))
 			}
 		}
 	}
