@@ -105,7 +105,8 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	// Track requests (need mutex since callbacks run concurrently)
 	var requests []RequestInfo
 	var mu sync.Mutex
-	requestStart := make(map[string]time.Time)
+	// Use request pointer address as unique key to handle duplicate URLs
+	requestStart := make(map[playwright.Request]time.Time)
 
 	// Listen at context level to catch all requests including from workers/subframes
 	context.OnRequest(func(req playwright.Request) {
@@ -113,7 +114,7 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 			fmt.Printf("  [DEBUG] Request: %s %s\n", req.Method(), req.URL())
 		}
 		mu.Lock()
-		requestStart[req.URL()] = time.Now()
+		requestStart[req] = time.Now()
 		mu.Unlock()
 	})
 
@@ -130,10 +131,11 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 		}
 		
 		mu.Lock()
-		start, ok := requestStart[url]
+		start, ok := requestStart[req]
 		if !ok {
 			start = time.Now()
 		}
+		delete(requestStart, req) // Clean up
 		mu.Unlock()
 
 		// Note: Can't call AllHeaders() or Body() here - causes deadlock
