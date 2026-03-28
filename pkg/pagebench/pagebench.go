@@ -37,7 +37,7 @@ type PageStats struct {
 }
 
 // Run captures and analyzes a page load
-func Run(name string, page *config.PageConfig) (*PageStats, error) {
+func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error) {
 	// Install playwright browsers if needed
 	if err := playwright.Install(); err != nil {
 		return nil, fmt.Errorf("failed to install playwright: %w", err)
@@ -101,7 +101,9 @@ func Run(name string, page *config.PageConfig) (*PageStats, error) {
 	requestStart := make(map[string]time.Time)
 
 	pg.OnRequest(func(req playwright.Request) {
-		fmt.Printf("  [DEBUG] Request: %s %s\n", req.Method(), req.URL())
+		if verbose {
+			fmt.Printf("  [DEBUG] Request: %s %s\n", req.Method(), req.URL())
+		}
 		mu.Lock()
 		requestStart[req.URL()] = time.Now()
 		mu.Unlock()
@@ -110,7 +112,9 @@ func Run(name string, page *config.PageConfig) (*PageStats, error) {
 	pg.OnResponse(func(resp playwright.Response) {
 		url := resp.URL()
 		req := resp.Request()
-		fmt.Printf("  [DEBUG] Response: %d %s (%s)\n", resp.Status(), url, req.ResourceType())
+		if verbose {
+			fmt.Printf("  [DEBUG] Response: %d %s (%s)\n", resp.Status(), url, req.ResourceType())
+		}
 		
 		mu.Lock()
 		start, ok := requestStart[url]
