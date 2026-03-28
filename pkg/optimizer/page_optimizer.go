@@ -11,20 +11,26 @@ import (
 	"github.com/marccampbell/autoprobe/pkg/claude"
 	"github.com/marccampbell/autoprobe/pkg/config"
 	"github.com/marccampbell/autoprobe/pkg/fireworks"
+	"github.com/marccampbell/autoprobe/pkg/groq"
 	"github.com/marccampbell/autoprobe/pkg/pagebench"
 	"github.com/marccampbell/autoprobe/pkg/tools"
 )
 
+// FastClient interface for exploration models (Groq, Fireworks)
+type FastClient interface {
+	RunWithTools(systemPrompt string, userPrompt string, availableTools []tools.Tool, onMessage func(string), onToolUse func(string)) error
+}
+
 // PageOptimizer runs the optimization loop for pages
 type PageOptimizer struct {
-	cfg       *config.Config
-	page      *config.PageConfig
-	name      string
-	state     *PageRunState
-	client    *claude.Client
-	fastClient *fireworks.Client
-	dryRun    bool
-	verbose   bool
+	cfg        *config.Config
+	page       *config.PageConfig
+	name       string
+	state      *PageRunState
+	client     *claude.Client
+	fastClient FastClient
+	dryRun     bool
+	verbose    bool
 }
 
 // PageRunState tracks state for a page optimization run
@@ -56,10 +62,18 @@ func NewPageOptimizer(cfg *config.Config, pageName string, page *config.PageConf
 		return nil, err
 	}
 
-	// Fast client for exploration (required for page optimization)
-	fastClient, err := fireworks.NewClient()
-	if err != nil {
-		return nil, fmt.Errorf("page optimization requires Fireworks API: %w\nSet FIREWORKS_API_KEY environment variable", err)
+	// Fast client for exploration (Groq preferred, Fireworks fallback)
+	var fastClient FastClient
+	groqClient, groqErr := groq.NewClient()
+	if groqErr == nil {
+		fastClient = groqClient
+	} else {
+		fireworksClient, fwErr := fireworks.NewClient()
+		if fwErr == nil {
+			fastClient = fireworksClient
+		} else {
+			return nil, fmt.Errorf("page optimization requires GROQ_API_KEY or FIREWORKS_API_KEY")
+		}
 	}
 
 	return &PageOptimizer{
