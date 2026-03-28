@@ -270,27 +270,37 @@ func (o *PageOptimizer) gatherContext(slowRequests []pagebench.RequestInfo) stri
 }
 
 func (o *PageOptimizer) getProposalWithTools(context string) (*Proposal, bool, error) {
-	systemPrompt := `You are autoprobe, an AI performance optimizer.
+	systemPrompt := `You are autoprobe, a frontend performance optimizer.
 
-TASK: Find ONE optimization for the slow XHR requests and output a JSON proposal.
+TASK: Optimize the CLIENT-SIDE code to reduce slow/redundant XHR requests.
+
+FOCUS ON (in priority order):
+1. Redundant requests - same API called multiple times on page load
+2. useEffect issues - missing deps causing re-fetches, effects that run too often
+3. Request waterfalls - sequential requests that could be parallel
+4. Missing caching - data fetched repeatedly that could be cached/memoized
+5. Unnecessary re-renders - components re-rendering and triggering fetches
+6. Request batching - multiple small requests that could be one
+
+ASSUME: The page code was written organically without architecture. Look for quick wins.
+DO NOT: Optimize server-side/API code - that's handled separately with endpoint optimization.
 
 STEPS:
-1. Briefly state hypothesis
-2. Use tools to find the code (grep, read_file)
-3. Output JSON proposal with the fix
+1. State your hypothesis about what client-side issue is causing slow/redundant requests
+2. Find the React components making these requests (grep for the API path, find useEffect/fetch calls)
+3. Propose a client-side fix
 
-OUTPUT (required - you MUST output this JSON):
-{"proposal":{"hypothesis":"...","change":"...","file":"path/to/file","old_code":"exact match","new_code":"fixed code"}}
+OUTPUT (required JSON):
+{"proposal":{"hypothesis":"...","change":"...","file":"path/to/file.tsx","old_code":"exact match","new_code":"fixed code"}}
 
-OR if truly nothing to optimize:
+OR if no client-side optimization found:
 {"done":true,"done_reason":"..."}
 
-CRITICAL RULES:
-- Your response MUST end with valid JSON
-- old_code must be EXACT copy from the file
-- old_code must be UNIQUE in the file (include enough context like function name)
+RULES:
+- old_code must be EXACT copy from file
+- old_code must be UNIQUE (include function/component name for context)
 - ONE change only
-- No markdown, no explanation after the JSON`
+- Focus on .tsx/.jsx/.ts/.js files`
 
 	if o.cfg.Rules != "" {
 		systemPrompt += "\n\nUser rules:\n" + o.cfg.Rules
