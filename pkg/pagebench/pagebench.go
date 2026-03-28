@@ -107,7 +107,8 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	var mu sync.Mutex
 	requestStart := make(map[string]time.Time)
 
-	pg.OnRequest(func(req playwright.Request) {
+	// Listen at context level to catch all requests including from workers/subframes
+	context.OnRequest(func(req playwright.Request) {
 		if verbose {
 			fmt.Printf("  [DEBUG] Request: %s %s\n", req.Method(), req.URL())
 		}
@@ -116,7 +117,7 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 		mu.Unlock()
 	})
 
-	pg.OnResponse(func(resp playwright.Response) {
+	context.OnResponse(func(resp playwright.Response) {
 		url := resp.URL()
 		req := resp.Request()
 		if verbose {
