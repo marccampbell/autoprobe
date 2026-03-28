@@ -104,7 +104,7 @@ func (c *Client) Complete(systemPrompt string, userPrompt string) (string, error
 }
 
 // RunWithTools executes a prompt with tools until completion
-func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableTools []tools.Tool, onMessage func(string)) error {
+func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableTools []tools.Tool, onMessage func(string), onToolUse func(string)) error {
 	messages := []Message{
 		{
 			Role: "user",
@@ -170,9 +170,9 @@ func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableT
 				IsError:   result.IsError,
 			})
 			
-			// Log tool use for verbose mode (via callback)
-			if onMessage != nil {
-				onMessage(fmt.Sprintf("\n[TOOL: %s]\n", tu.Name))
+			// Notify about tool use if callback provided
+			if onToolUse != nil {
+				onToolUse(tu.Name)
 			}
 		}
 

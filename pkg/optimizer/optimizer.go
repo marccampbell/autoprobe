@@ -252,7 +252,9 @@ RULES:
 
 	var fullResponse strings.Builder
 	var hypothesisPrinted bool
-	err := o.client.RunWithTools(systemPrompt, userPrompt.String(), availableTools, func(text string) {
+	
+	// Text callback - always capture, conditionally print
+	onMessage := func(text string) {
 		fullResponse.WriteString(text)
 		
 		if o.verbose {
@@ -271,7 +273,17 @@ RULES:
 				}
 			}
 		}
-	})
+	}
+	
+	// Tool callback - only in verbose mode
+	var onToolUse func(string)
+	if o.verbose {
+		onToolUse = func(toolName string) {
+			fmt.Printf("\n[TOOL: %s]\n", toolName)
+		}
+	}
+	
+	err := o.client.RunWithTools(systemPrompt, userPrompt.String(), availableTools, onMessage, onToolUse)
 	
 	if o.verbose {
 		fmt.Println("\n--- END LLM OUTPUT ---")
