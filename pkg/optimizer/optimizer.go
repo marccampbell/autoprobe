@@ -384,13 +384,35 @@ func extractJSON(s string) string {
 	}
 
 	depth := 0
+	inString := false
+	escaped := false
+	
 	for i := start; i < len(s); i++ {
-		if s[i] == '{' {
-			depth++
-		} else if s[i] == '}' {
-			depth--
-			if depth == 0 {
-				return s[start : i+1]
+		c := s[i]
+		
+		if escaped {
+			escaped = false
+			continue
+		}
+		
+		if c == '\\' && inString {
+			escaped = true
+			continue
+		}
+		
+		if c == '"' {
+			inString = !inString
+			continue
+		}
+		
+		if !inString {
+			if c == '{' {
+				depth++
+			} else if c == '}' {
+				depth--
+				if depth == 0 {
+					return s[start : i+1]
+				}
 			}
 		}
 	}
