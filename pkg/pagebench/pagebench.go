@@ -294,11 +294,17 @@ func PrintStats(stats *PageStats) {
 		}
 	}
 	
-	// Duplicates
-	if len(stats.Duplicates) > 0 {
-		fmt.Printf("\n⚠ Duplicate Requests (%d unique URLs called multiple times):\n", len(stats.Duplicates))
-		for url, count := range stats.Duplicates {
-			// Truncate long URLs
+	// Duplicates (excluding dev tooling)
+	var realDuplicates []string
+	for url, count := range stats.Duplicates {
+		if !IsDevToolingURL(url) && count > 1 {
+			realDuplicates = append(realDuplicates, url)
+		}
+	}
+	if len(realDuplicates) > 0 {
+		fmt.Printf("\n⚠ Duplicate Requests (%d unique URLs called multiple times):\n", len(realDuplicates))
+		for _, url := range realDuplicates {
+			count := stats.Duplicates[url]
 			displayURL := url
 			if len(displayURL) > 60 {
 				displayURL = displayURL[:57] + "..."
@@ -355,6 +361,25 @@ func extractOrigin(url string) string {
 		return url
 	}
 	return url[:start+3+end]
+}
+
+// IsDevToolingURL returns true for URLs that are dev server tooling, not app code
+func IsDevToolingURL(url string) bool {
+	devPatterns := []string{
+		"@vite",
+		"@react-refresh",
+		"@fs/",
+		"node_modules/.vite",
+		"__vite_ping",
+		"hot-update",
+		".hot-update.",
+	}
+	for _, pattern := range devPatterns {
+		if strings.Contains(url, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func truncate(s string, n int) string {

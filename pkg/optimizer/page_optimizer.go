@@ -193,6 +193,10 @@ func (o *PageOptimizer) getSlowestXHR(stats *pagebench.PageStats, n int) []pageb
 	var xhrRequests []pagebench.RequestInfo
 	for _, req := range stats.Requests {
 		if req.ResourceType == "xhr" || req.ResourceType == "fetch" {
+			// Skip dev tooling URLs
+			if pagebench.IsDevToolingURL(req.URL) {
+				continue
+			}
 			xhrRequests = append(xhrRequests, req)
 		}
 	}
