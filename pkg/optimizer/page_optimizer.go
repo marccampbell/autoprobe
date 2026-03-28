@@ -356,6 +356,16 @@ After exploring, summarize:
 		return nil, false, err
 	}
 
+	// Check if we got any findings
+	findings := explorationFindings.String()
+	if len(findings) == 0 {
+		return nil, false, fmt.Errorf("exploration produced no findings")
+	}
+	
+	if o.verbose {
+		fmt.Printf("\n--- EXPLORATION FINDINGS (%d chars) ---\n%s\n", len(findings), findings)
+	}
+
 	// Phase 2: Generate proposal with Claude
 	fmt.Print(" (generating proposal)")
 	
