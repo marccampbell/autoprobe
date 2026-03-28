@@ -63,13 +63,13 @@ func GetTools(allowWrite bool) []Tool {
 		},
 		{
 			Name:        "glob",
-			Description: "Find files matching a glob pattern. Returns a list of matching file paths.",
+			Description: "Find files matching a glob pattern. Use 'pattern' parameter with glob syntax like '**/*.tsx' or 'src/**/*.ts'.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"pattern": map[string]interface{}{
 						"type":        "string",
-						"description": "Glob pattern to match (e.g., '**/*.go', 'src/**/*.ts')",
+						"description": "Glob pattern (required). Examples: '**/*.go', 'src/**/*.ts', 'vendor-web/**/*.tsx'",
 					},
 				},
 				"required": []string{"pattern"},
@@ -236,7 +236,11 @@ func executeListFiles(input map[string]interface{}) (string, bool) {
 func executeGlob(input map[string]interface{}) (string, bool) {
 	pattern, ok := input["pattern"].(string)
 	if !ok {
-		return "pattern is required", true
+		// Fallback: try "path" if model used wrong param name
+		pattern, ok = input["path"].(string)
+		if !ok {
+			return "pattern is required", true
+		}
 	}
 
 	// Use find for recursive globs since Go's filepath.Glob doesn't support **
