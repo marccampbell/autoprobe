@@ -7,12 +7,14 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/marccampbell/autoprobe/pkg/tools"
 )
 
 const apiURL = "https://api.fireworks.ai/inference/v1/chat/completions"
 const defaultModel = "accounts/fireworks/models/kimi-k2p5"
+const maxExplorationTurns = 15 // Cap exploration to avoid rate limits
 
 // Client is a Fireworks API client
 type Client struct {
@@ -121,9 +123,15 @@ func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableT
 	}
 
 	fwTools := convertTools(availableTools)
-	maxTurns := 30
 
-	for turn := 0; turn < maxTurns; turn++ {
+	for turn := 0; turn < maxExplorationTurns; turn++ {
+		// Nudge to wrap up near the end
+		if turn == maxExplorationTurns-2 {
+			messages = append(messages, Message{
+				Role:    "user",
+				Content: "Wrap up your investigation and summarize your findings now.",
+			})
+		}
 		resp, err := c.sendRequest(messages, fwTools)
 		if err != nil {
 			return err
@@ -198,33 +206,50 @@ func (c *Client) sendRequest(messages []Message, tools []Tool) (*Response, error
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequest("POST", apiURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	// Retry with backoff for rate limits
+	maxRetries := 3
+	backoff := time.Second
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		httpReq, err := http.NewRequest("POST", apiURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+		httpResp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("request failed: %w", err)
+		}
+		defer httpResp.Body.Close()
+
+		respBody, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
+
+		if httpResp.StatusCode == 429 {
+			if attempt < maxRetries-1 {
+				time.Sleep(backoff)
+				backoff *= 2
+				continue
+			}
+			return nil, fmt.Errorf("rate limited after %d retries", maxRetries)
+		}
+
+		if httpResp.StatusCode != 200 {
+			return nil, fmt.Errorf("API error (%d): %s", httpResp.StatusCode, string(respBody))
+		}
+
+		var resp Response
+		if err := json.Unmarshal(respBody, &resp); err != nil {
+			return nil, fmt.Errorf("failed to parse response: %w", err)
+		}
+
+		return &resp, nil
 	}
 
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-
-	httpResp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer httpResp.Body.Close()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if httpResp.StatusCode != 200 {
-		return nil, fmt.Errorf("API error (%d): %s", httpResp.StatusCode, string(respBody))
-	}
-
-	var resp Response
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	return &resp, nil
+	return nil, fmt.Errorf("max retries exceeded")
 }
