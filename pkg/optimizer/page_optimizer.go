@@ -350,13 +350,32 @@ RULES:
 
 	// Extract JSON from response
 	jsonStr := extractJSON(fullResponse.String())
+	
+	// If no JSON found, ask Claude to just output the JSON
 	if jsonStr == "" {
-		// Debug: show what we got
+		fmt.Print(" (requesting JSON)")
+		
+		followUp := `Based on your investigation, output ONLY the JSON proposal now. No explanation, just the JSON:
+{"proposal":{"hypothesis":"...","change":"...","file":"...","old_code":"...","new_code":"..."}}
+or {"done":true,"done_reason":"..."}`
+		
+		var jsonResponse strings.Builder
+		err = o.client.Complete(systemPrompt, fullResponse.String()+"\n\n"+followUp, func(text string) {
+			jsonResponse.WriteString(text)
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		
+		jsonStr = extractJSON(jsonResponse.String())
+	}
+	
+	if jsonStr == "" {
 		response := fullResponse.String()
 		if len(response) > 500 {
 			response = response[len(response)-500:]
 		}
-		return nil, false, fmt.Errorf("no JSON proposal found. Last 500 chars of response:\n%s", response)
+		return nil, false, fmt.Errorf("no JSON proposal found. Last 500 chars:\n%s", response)
 	}
 
 	jsonStr = fixJSONEscaping(jsonStr)
