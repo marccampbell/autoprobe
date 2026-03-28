@@ -108,6 +108,19 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	var mu sync.Mutex
 	// Use request pointer address as unique key to handle duplicate URLs
 	requestStart := make(map[playwright.Request]time.Time)
+	
+	// Capture console messages
+	pg.OnConsole(func(msg playwright.ConsoleMessage) {
+		msgType := msg.Type()
+		if msgType == "error" || msgType == "warning" {
+			fmt.Printf("  [CONSOLE %s] %s\n", strings.ToUpper(msgType), msg.Text())
+		}
+	})
+	
+	// Capture page errors
+	pg.OnPageError(func(err error) {
+		fmt.Printf("  [PAGE ERROR] %s\n", err.Error())
+	})
 
 	// Listen at context level to catch all requests including from workers/subframes
 	context.OnRequest(func(req playwright.Request) {
