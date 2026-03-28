@@ -10,19 +10,21 @@ import (
 
 	"github.com/marccampbell/autoprobe/pkg/claude"
 	"github.com/marccampbell/autoprobe/pkg/config"
+	"github.com/marccampbell/autoprobe/pkg/fireworks"
 	"github.com/marccampbell/autoprobe/pkg/pagebench"
 	"github.com/marccampbell/autoprobe/pkg/tools"
 )
 
 // PageOptimizer runs the optimization loop for pages
 type PageOptimizer struct {
-	cfg     *config.Config
-	page    *config.PageConfig
-	name    string
-	state   *PageRunState
-	client  *claude.Client
-	dryRun  bool
-	verbose bool
+	cfg       *config.Config
+	page      *config.PageConfig
+	name      string
+	state     *PageRunState
+	client    *claude.Client
+	fastClient *fireworks.Client
+	dryRun    bool
+	verbose   bool
 }
 
 // PageRunState tracks state for a page optimization run
@@ -54,10 +56,14 @@ func NewPageOptimizer(cfg *config.Config, pageName string, page *config.PageConf
 		return nil, err
 	}
 
+	// Fast client for exploration (optional - falls back to Claude if not available)
+	fastClient, _ := fireworks.NewClient()
+
 	return &PageOptimizer{
-		cfg:     cfg,
-		page:    page,
-		name:    pageName,
+		cfg:        cfg,
+		page:       page,
+		name:       pageName,
+		fastClient: fastClient,
 		client:  client,
 		dryRun:  dryRun,
 		verbose: verbose,
@@ -274,62 +280,43 @@ func (o *PageOptimizer) gatherContext(slowRequests []pagebench.RequestInfo) stri
 }
 
 func (o *PageOptimizer) getProposalWithTools(context string) (*Proposal, bool, error) {
-	systemPrompt := `You are autoprobe, a frontend performance optimizer.
+	// Phase 1: Fast exploration with Kimi K2.5 (if available)
+	// Phase 2: Proposal generation with Claude
+	
+	explorationPrompt := `You are a code explorer. Your job is to investigate slow XHR requests and summarize findings.
 
-TASK: Optimize the CLIENT-SIDE code to reduce slow/redundant XHR requests.
+TASK: Find the client-side code responsible for slow/redundant XHR requests.
 
-FOCUS ON (in priority order):
-1. Redundant requests - same API called multiple times on page load
-2. useEffect issues - missing deps causing re-fetches, effects that run too often
-3. Request waterfalls - sequential requests that could be parallel
-4. Missing caching - data fetched repeatedly that could be cached/memoized
-5. Unnecessary re-renders - components re-rendering and triggering fetches
-6. Request batching - multiple small requests that could be one
+Look for:
+- React components making these API calls
+- useEffect hooks triggering fetches
+- Redux actions/thunks making requests
+- Any obvious issues (redundant calls, missing deps, no caching)
 
-ASSUME: The page code was written organically without architecture. Look for quick wins.
-DO NOT: Optimize server-side/API code - that's handled separately with endpoint optimization.
+Use tools to explore, then OUTPUT A SUMMARY of what you found:
+- Which files contain the relevant code
+- What patterns you see (redundant calls, waterfalls, etc.)
+- Specific code snippets that could be optimized
 
-STEPS:
-1. State your hypothesis about what client-side issue is causing slow/redundant requests
-2. Find the React components making these requests (grep for the API path, find useEffect/fetch calls)
-3. Propose a client-side fix
-
-OUTPUT (required JSON):
-{"proposal":{"hypothesis":"...","change":"...","file":"path/to/file.tsx","old_code":"exact match","new_code":"fixed code"}}
-
-OR if no client-side optimization found:
-{"done":true,"done_reason":"..."}
-
-RULES:
-- old_code must be EXACT copy from file
-- old_code must be UNIQUE (include function/component name for context)
-- ONE change only
-- Focus on .tsx/.jsx/.ts/.js files`
-
-	if o.cfg.Rules != "" {
-		systemPrompt += "\n\nUser rules:\n" + o.cfg.Rules
-	}
+Be concise. Focus on findings, not narration.`
 
 	var userPrompt strings.Builder
 	userPrompt.WriteString(o.formatHistory())
 	userPrompt.WriteString("\n")
 	userPrompt.WriteString(context)
-	userPrompt.WriteString("\nState your hypothesis, then investigate and propose a fix.")
+	userPrompt.WriteString("\nInvestigate and summarize your findings.")
 
 	availableTools := tools.GetTools(false) // read-only
 
-	var fullResponse strings.Builder
+	var explorationFindings strings.Builder
 	
 	onMessage := func(text string) {
-		fullResponse.WriteString(text)
-		
-		// Only print in verbose mode - hypothesis comes from the JSON proposal
+		explorationFindings.WriteString(text)
 		if o.verbose {
 			fmt.Print(text)
 		}
 	}
 	
-	// Show progress dots for each tool call
 	onToolUse := func(toolName string) {
 		if o.verbose {
 			fmt.Printf("\n[TOOL: %s]\n", toolName)
@@ -337,8 +324,51 @@ RULES:
 			fmt.Print(".")
 		}
 	}
+
+	// Use fast client if available, otherwise fall back to Claude
+	var err error
+	if o.fastClient != nil {
+		err = o.fastClient.RunWithTools(explorationPrompt, userPrompt.String(), availableTools, onMessage, onToolUse)
+	} else {
+		err = o.client.RunWithTools(explorationPrompt, userPrompt.String(), availableTools, onMessage, onToolUse)
+	}
 	
-	err := o.client.RunWithTools(systemPrompt, userPrompt.String(), availableTools, onMessage, onToolUse)
+	if err != nil {
+		return nil, false, err
+	}
+
+	// Phase 2: Generate proposal with Claude
+	fmt.Print(" (generating proposal)")
+	
+	proposalPrompt := `You are autoprobe. Based on the code exploration findings below, propose ONE optimization.
+
+OUTPUT (required JSON only, nothing else):
+{"proposal":{"hypothesis":"one line explanation","change":"what the fix does","file":"path/to/file.tsx","old_code":"EXACT code from file","new_code":"fixed code"}}
+
+OR if no optimization found:
+{"done":true,"done_reason":"..."}
+
+RULES:
+- old_code must match the file EXACTLY (copy from the findings)
+- old_code must be UNIQUE in the file (include enough context)
+- ONE change only
+- Focus on client-side .tsx/.jsx/.ts/.js files
+- Do NOT optimize server/API code`
+
+	if o.cfg.Rules != "" {
+		proposalPrompt += "\n\nUser rules:\n" + o.cfg.Rules
+	}
+
+	proposalContext := fmt.Sprintf("## Exploration Findings\n%s\n\n## Slow Requests\n%s", 
+		explorationFindings.String(), context)
+
+	var proposalResponse strings.Builder
+	err = o.client.Complete(proposalPrompt, proposalContext, func(text string) {
+		proposalResponse.WriteString(text)
+		if o.verbose {
+			fmt.Print(text)
+		}
+	})
 	
 	if o.verbose {
 		fmt.Println("\n--- END LLM OUTPUT ---")
@@ -349,18 +379,18 @@ RULES:
 	}
 
 	// Extract JSON from response
-	jsonStr := extractJSON(fullResponse.String())
+	jsonStr := extractJSON(proposalResponse.String())
 	
-	// If no JSON found, ask Claude to just output the JSON
+	// If no JSON found, ask Claude to try again
 	if jsonStr == "" {
-		fmt.Print(" (requesting JSON)")
+		fmt.Print(" (retrying)")
 		
-		followUp := `Based on your investigation, output ONLY the JSON proposal now. No explanation, just the JSON:
+		followUp := `Output ONLY the JSON proposal. No explanation:
 {"proposal":{"hypothesis":"...","change":"...","file":"...","old_code":"...","new_code":"..."}}
 or {"done":true,"done_reason":"..."}`
 		
 		var jsonResponse strings.Builder
-		err = o.client.Complete(systemPrompt, fullResponse.String()+"\n\n"+followUp, func(text string) {
+		err = o.client.Complete(proposalPrompt, proposalContext+"\n\n"+followUp, func(text string) {
 			jsonResponse.WriteString(text)
 		})
 		if err != nil {
@@ -371,7 +401,7 @@ or {"done":true,"done_reason":"..."}`
 	}
 	
 	if jsonStr == "" {
-		response := fullResponse.String()
+		response := proposalResponse.String()
 		if len(response) > 500 {
 			response = response[len(response)-500:]
 		}
