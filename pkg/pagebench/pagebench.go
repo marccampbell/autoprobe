@@ -120,8 +120,13 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	context.OnResponse(func(resp playwright.Response) {
 		url := resp.URL()
 		req := resp.Request()
-		if verbose {
-			fmt.Printf("  [DEBUG] Response: %d %s (%s)\n", resp.Status(), url, req.ResourceType())
+		resType := req.ResourceType()
+		
+		// DEBUG: Always log XHR/fetch to see what we're catching
+		if resType == "xhr" || resType == "fetch" {
+			fmt.Printf("  [XHR] %d %s %s\n", resp.Status(), req.Method(), url)
+		} else if verbose {
+			fmt.Printf("  [DEBUG] Response: %d %s (%s)\n", resp.Status(), url, resType)
 		}
 		
 		mu.Lock()
@@ -140,7 +145,7 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 			StartTime:    start,
 			Duration:     time.Since(start),
 			Size:         0,
-			ResourceType: req.ResourceType(),
+			ResourceType: resType,
 		}
 		mu.Lock()
 		requests = append(requests, info)
