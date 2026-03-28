@@ -104,12 +104,13 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 		}
 
 		o.state.Iteration++
+		fmt.Printf("\n=== Iteration %d ===\n", o.state.Iteration)
 
 		// Gather context about the page and slow requests
 		context := o.gatherContext(slowRequests)
 
 		// Get proposal (Claude investigates and proposes)
-		fmt.Printf("\nAnalyzing code and forming hypothesis...")
+		fmt.Printf("Analyzing code and forming hypothesis...")
 		proposal, done, err := o.getProposalWithTools(context)
 		fmt.Println() // newline after the status
 		if err != nil {
@@ -125,7 +126,7 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 		retries = 0 // Reset on success
 
 		if done {
-			fmt.Println("\nNo more optimizations identified.")
+			fmt.Println("No more optimizations identified.")
 			break
 		}
 
@@ -135,8 +136,7 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 			continue
 		}
 
-		fmt.Printf("\n=== Iteration %d ===\n", o.state.Iteration)
-		fmt.Printf("Hypothesis: %s\n", proposal.Hypothesis)
+		fmt.Printf("\nHypothesis: %s\n", proposal.Hypothesis)
 		fmt.Printf("Change: %s\n", proposal.Change)
 		fmt.Printf("File: %s\n", proposal.File)
 
