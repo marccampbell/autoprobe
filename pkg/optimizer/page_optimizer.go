@@ -109,8 +109,9 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 		context := o.gatherContext(slowRequests)
 
 		// Get proposal (Claude investigates and proposes)
-		fmt.Printf("\n=== Investigating... ===\n")
+		fmt.Printf("\nAnalyzing code and forming hypothesis...")
 		proposal, done, err := o.getProposalWithTools(context)
+		fmt.Println() // newline after the status
 		if err != nil {
 			fmt.Printf("Failed to get proposal: %v\n", err)
 			retries++
@@ -328,10 +329,12 @@ RULES:
 		}
 	}
 	
-	var onToolUse func(string)
-	if o.verbose {
-		onToolUse = func(toolName string) {
+	// Show progress dots for each tool call
+	onToolUse := func(toolName string) {
+		if o.verbose {
 			fmt.Printf("\n[TOOL: %s]\n", toolName)
+		} else {
+			fmt.Print(".")
 		}
 	}
 	
