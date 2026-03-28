@@ -168,11 +168,22 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	// Navigate to actual page
 	pageStart := time.Now()
 	_, err = pg.Goto(page.URL, playwright.PageGotoOptions{
-		WaitUntil: playwright.WaitUntilStateNetworkidle,
+		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to navigate: %w", err)
 	}
+	
+	// Wait for network to truly settle - SPAs fire XHR after initial load
+	// We wait for networkidle, then wait a bit more, then check again
+	for i := 0; i < 3; i++ {
+		pg.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+			State: playwright.LoadStateNetworkidle,
+		})
+		// Brief pause to let any new requests start
+		time.Sleep(200 * time.Millisecond)
+	}
+	
 	fullyLoaded := time.Since(pageStart)
 
 
