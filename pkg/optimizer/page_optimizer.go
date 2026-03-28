@@ -63,9 +63,9 @@ func NewPageOptimizer(cfg *config.Config, pageName string, page *config.PageConf
 
 // Run executes the page optimization loop
 func (o *PageOptimizer) Run(maxIterations int) error {
-	// Initial benchmark
-	fmt.Println("\n=== Initial Page Benchmark ===")
-	baseline, err := pagebench.Run(o.name, o.page, o.verbose)
+	// Initial benchmark (3 runs, use median)
+	fmt.Println("\n=== Initial Page Benchmark (3 runs) ===")
+	baseline, err := pagebench.RunMultiple(o.name, o.page, 3, o.verbose)
 	if err != nil {
 		return fmt.Errorf("initial benchmark failed: %w", err)
 	}
@@ -152,9 +152,9 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 		}
 		fmt.Println("done")
 
-		// Re-benchmark
-		fmt.Print("Benchmarking... ")
-		afterStats, err := pagebench.Run(o.name, o.page, false)
+		// Re-benchmark (3 runs, use median)
+		fmt.Print("Benchmarking (3 runs)... ")
+		afterStats, err := pagebench.RunMultiple(o.name, o.page, 3, false)
 		if err != nil {
 			fmt.Printf("failed: %v\n", err)
 			o.revertChange(proposal.File, originalContent)

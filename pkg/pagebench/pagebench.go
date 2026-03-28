@@ -252,6 +252,53 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	return stats, nil
 }
 
+// RunMultiple runs the benchmark multiple times and returns the run with median XHR timing
+func RunMultiple(name string, page *config.PageConfig, runs int, verbose bool) (*PageStats, error) {
+	if runs < 1 {
+		runs = 1
+	}
+	
+	var results []*PageStats
+	var xhrTotals []time.Duration
+	
+	for i := 0; i < runs; i++ {
+		if verbose {
+			fmt.Printf("  Run %d/%d...", i+1, runs)
+		}
+		stats, err := Run(name, page, false) // Don't be verbose for individual runs
+		if err != nil {
+			return nil, err
+		}
+		
+		// Calculate total XHR time
+		total := time.Duration(0)
+		for _, req := range stats.Requests {
+			if req.ResourceType == "xhr" || req.ResourceType == "fetch" {
+				total += req.Duration
+			}
+		}
+		
+		results = append(results, stats)
+		xhrTotals = append(xhrTotals, total)
+		
+		if verbose {
+			fmt.Printf(" %s\n", total.Round(time.Millisecond))
+		}
+	}
+	
+	// Find median
+	indices := make([]int, len(xhrTotals))
+	for i := range indices {
+		indices[i] = i
+	}
+	sort.Slice(indices, func(i, j int) bool {
+		return xhrTotals[indices[i]] < xhrTotals[indices[j]]
+	})
+	
+	medianIdx := indices[len(indices)/2]
+	return results[medianIdx], nil
+}
+
 // PrintStats outputs page stats to terminal
 func PrintStats(stats *PageStats) {
 	fmt.Printf("\nPage: %s\n", stats.URL)
