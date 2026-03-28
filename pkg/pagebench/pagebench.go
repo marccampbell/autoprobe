@@ -3,6 +3,7 @@ package pagebench
 import (
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -205,6 +206,16 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	})
 	
 	fullyLoaded := time.Since(pageStart)
+	
+	// DEBUG: Take a screenshot to see what the page looks like
+	screenshot, err := pg.Screenshot(playwright.PageScreenshotOptions{
+		FullPage: playwright.Bool(true),
+	})
+	if err == nil {
+		screenshotPath := "/tmp/autoprobe-debug.png"
+		os.WriteFile(screenshotPath, screenshot, 0644)
+		fmt.Printf("  DEBUG: Screenshot saved to %s\n", screenshotPath)
+	}
 
 
 
