@@ -1,6 +1,7 @@
 package pagebench
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"sort"
@@ -14,13 +15,24 @@ import (
 
 // RequestInfo holds info about a single network request
 type RequestInfo struct {
-	URL        string
-	Method     string
-	Status     int
-	StartTime  time.Time
-	Duration   time.Duration
-	Size       int64
+	URL          string
+	Method       string
+	Status       int
+	StartTime    time.Time
+	Duration     time.Duration
+	Size         int64
 	ResourceType string
+	BodyHash     string // SHA256 of response body (for XHR/fetch only)
+	HasEtag      bool   // True if response has ETag header
+	HasVary      bool   // True if response has Vary header
+}
+
+// DuplicateInfo describes a set of duplicate requests
+type DuplicateInfo struct {
+	URL          string
+	Count        int
+	Identical    bool   // True if all responses have same body hash
+	TotalTimeMs  int64  // Combined time spent on these requests
 }
 
 // PageStats holds aggregate stats for a page load
@@ -32,9 +44,10 @@ type PageStats struct {
 	TotalRequests    int
 	TotalSize        int64
 	Requests         []RequestInfo
-	Duplicates       map[string]int // URL -> count
-	SlowRequests     []RequestInfo  // > 500ms
-	ByType           map[string]int // xhr, fetch, script, etc.
+	Duplicates       map[string]int        // URL -> count (legacy)
+	RedundantXHR     []DuplicateInfo       // XHR requests with identical responses
+	SlowRequests     []RequestInfo         // > 500ms
+	ByType           map[string]int        // xhr, fetch, script, etc.
 }
 
 // Run captures and analyzes a page load
@@ -107,6 +120,8 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	var mu sync.Mutex
 	// Use request pointer address as unique key to handle duplicate URLs
 	requestStart := make(map[playwright.Request]time.Time)
+	// Store response bodies for XHR (to detect duplicates)
+	xhrBodies := make(map[string][]string) // URL -> list of body hashes
 	
 	// Capture console messages (only in verbose mode)
 	if verbose {
@@ -149,8 +164,6 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 		delete(requestStart, req) // Clean up
 		mu.Unlock()
 
-		// Note: Can't call AllHeaders() or Body() here - causes deadlock
-		// Size will be 0; could parse from response if needed later
 		info := RequestInfo{
 			URL:          url,
 			Method:       req.Method(),
@@ -160,6 +173,37 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 			Size:         0,
 			ResourceType: resType,
 		}
+		
+		// For XHR/fetch, try to get body hash and check headers
+		if resType == "xhr" || resType == "fetch" {
+			// Check for cache-related headers (can't call in callback, do async)
+			go func() {
+				headers, err := resp.AllHeaders()
+				if err == nil {
+					if _, ok := headers["etag"]; ok {
+						mu.Lock()
+						info.HasEtag = true
+						mu.Unlock()
+					}
+					if _, ok := headers["vary"]; ok {
+						mu.Lock()
+						info.HasVary = true
+						mu.Unlock()
+					}
+				}
+				
+				// Get body hash
+				body, err := resp.Body()
+				if err == nil && len(body) > 0 {
+					hash := fmt.Sprintf("%x", sha256.Sum256(body))[:16] // First 16 chars of SHA256
+					mu.Lock()
+					info.BodyHash = hash
+					xhrBodies[url] = append(xhrBodies[url], hash)
+					mu.Unlock()
+				}
+			}()
+		}
+		
 		mu.Lock()
 		requests = append(requests, info)
 		mu.Unlock()
@@ -246,6 +290,47 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	for url, count := range urlCounts {
 		if count > 1 {
 			stats.Duplicates[url] = count
+		}
+	}
+
+	// Analyze XHR duplicates for identical responses
+	// Wait a moment for async body hash collection to complete
+	time.Sleep(100 * time.Millisecond)
+	
+	mu.Lock()
+	xhrByURL := make(map[string][]RequestInfo)
+	for _, req := range requests {
+		if req.ResourceType == "xhr" || req.ResourceType == "fetch" {
+			xhrByURL[req.URL] = append(xhrByURL[req.URL], req)
+		}
+	}
+	mu.Unlock()
+	
+	for url, reqs := range xhrByURL {
+		if len(reqs) > 1 {
+			// Check if all have same body hash (and no etag/vary)
+			identical := true
+			firstHash := ""
+			totalTime := int64(0)
+			
+			for i, req := range reqs {
+				totalTime += req.Duration.Milliseconds()
+				if req.HasEtag || req.HasVary {
+					identical = false
+				}
+				if i == 0 {
+					firstHash = req.BodyHash
+				} else if req.BodyHash != firstHash || firstHash == "" {
+					identical = false
+				}
+			}
+			
+			stats.RedundantXHR = append(stats.RedundantXHR, DuplicateInfo{
+				URL:         url,
+				Count:       len(reqs),
+				Identical:   identical,
+				TotalTimeMs: totalTime,
+			})
 		}
 	}
 
@@ -341,16 +426,42 @@ func PrintStats(stats *PageStats) {
 		}
 	}
 	
-	// Duplicates (excluding dev tooling)
-	var realDuplicates []string
-	for url, count := range stats.Duplicates {
-		if !IsDevToolingURL(url) && count > 1 {
-			realDuplicates = append(realDuplicates, url)
+	// Redundant XHR (duplicate requests with identical responses)
+	var redundant []DuplicateInfo
+	for _, dup := range stats.RedundantXHR {
+		if !IsDevToolingURL(dup.URL) {
+			redundant = append(redundant, dup)
 		}
 	}
-	if len(realDuplicates) > 0 {
-		fmt.Printf("\n⚠ Duplicate Requests (%d unique URLs called multiple times):\n", len(realDuplicates))
-		for _, url := range realDuplicates {
+	if len(redundant) > 0 {
+		fmt.Printf("\n🔴 Redundant XHR (identical responses, wasted requests):\n")
+		for _, dup := range redundant {
+			displayURL := dup.URL
+			if len(displayURL) > 55 {
+				displayURL = displayURL[:52] + "..."
+			}
+			status := "identical"
+			if !dup.Identical {
+				status = "may vary"
+			}
+			fmt.Printf("  %dx %s [%s, %dms wasted]\n", dup.Count, displayURL, status, dup.TotalTimeMs)
+		}
+	}
+	
+	// Other duplicates (excluding redundant XHR already shown)
+	var otherDuplicates []string
+	redundantURLs := make(map[string]bool)
+	for _, r := range stats.RedundantXHR {
+		redundantURLs[r.URL] = true
+	}
+	for url, count := range stats.Duplicates {
+		if !IsDevToolingURL(url) && count > 1 && !redundantURLs[url] {
+			otherDuplicates = append(otherDuplicates, url)
+		}
+	}
+	if len(otherDuplicates) > 0 {
+		fmt.Printf("\n⚠ Other Duplicate Requests:\n")
+		for _, url := range otherDuplicates {
 			count := stats.Duplicates[url]
 			displayURL := url
 			if len(displayURL) > 60 {

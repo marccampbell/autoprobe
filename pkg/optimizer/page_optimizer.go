@@ -421,24 +421,51 @@ func (o *PageOptimizer) revertChange(file, originalContent string) {
 func (o *PageOptimizer) compareXHRTimings(before, after *pagebench.PageStats) (bool, float64, float64) {
 	beforeTotal := time.Duration(0)
 	afterTotal := time.Duration(0)
+	beforeXHRCount := 0
+	afterXHRCount := 0
 
 	for _, req := range before.Requests {
 		if req.ResourceType == "xhr" || req.ResourceType == "fetch" {
 			beforeTotal += req.Duration
+			beforeXHRCount++
 		}
 	}
 
 	for _, req := range after.Requests {
 		if req.ResourceType == "xhr" || req.ResourceType == "fetch" {
 			afterTotal += req.Duration
+			afterXHRCount++
 		}
 	}
 
 	beforeMs := float64(beforeTotal.Milliseconds())
 	afterMs := float64(afterTotal.Milliseconds())
 	
-	improvement := (beforeMs - afterMs) / beforeMs
-	return improvement > 0.05, beforeMs, afterMs
+	// Count redundant (identical) XHR requests
+	beforeRedundant := 0
+	afterRedundant := 0
+	for _, dup := range before.RedundantXHR {
+		if dup.Identical {
+			beforeRedundant += dup.Count - 1 // -1 because first request is needed
+		}
+	}
+	for _, dup := range after.RedundantXHR {
+		if dup.Identical {
+			afterRedundant += dup.Count - 1
+		}
+	}
+	
+	// Win conditions:
+	// 1. Timing improved by >5% without getting significantly slower
+	// 2. Eliminated redundant identical requests (even if timing is similar)
+	// 3. Reduced total XHR count without slowing down significantly
+	
+	timingImproved := (beforeMs-afterMs)/beforeMs > 0.05
+	notSlowerThan10Pct := afterMs <= beforeMs*1.10
+	reducedRedundant := afterRedundant < beforeRedundant && notSlowerThan10Pct
+	reducedRequests := afterXHRCount < beforeXHRCount && notSlowerThan10Pct
+	
+	return timingImproved || reducedRedundant || reducedRequests, beforeMs, afterMs
 }
 
 func (o *PageOptimizer) printSummary() {
