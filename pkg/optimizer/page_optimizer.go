@@ -147,6 +147,12 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 		originalContent, err := o.applyChange(proposal)
 		if err != nil {
 			fmt.Printf("Failed to apply: %v\n", err)
+			o.state.Iteration-- // Don't count failed applies
+			retries++
+			if retries >= maxRetries {
+				fmt.Printf("Max retries (%d) reached, stopping\n", maxRetries)
+				break
+			}
 			continue
 		}
 
@@ -282,6 +288,7 @@ OR if truly nothing to optimize:
 CRITICAL RULES:
 - Your response MUST end with valid JSON
 - old_code must be EXACT copy from the file
+- old_code must be UNIQUE in the file (include enough context like function name)
 - ONE change only
 - No markdown, no explanation after the JSON`
 
