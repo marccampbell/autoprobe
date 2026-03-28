@@ -161,10 +161,10 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 			continue
 		}
 
-		improved := o.compareXHRTimings(o.state.CurrentStats, afterStats)
+		improved, beforeMs, afterMs := o.compareXHRTimings(o.state.CurrentStats, afterStats)
 
 		if improved {
-			fmt.Printf("KEEP ✓\n")
+			fmt.Printf("KEEP ✓ (%.0fms → %.0fms, -%.0f%%)\n", beforeMs, afterMs, (beforeMs-afterMs)/beforeMs*100)
 			o.state.CurrentStats = afterStats
 			o.state.Attempts = append(o.state.Attempts, PageAttempt{
 				Hypothesis: proposal.Hypothesis,
@@ -174,7 +174,12 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 				Kept:       true,
 			})
 		} else {
-			fmt.Printf("DISCARD ✗\n")
+			diff := afterMs - beforeMs
+			sign := "+"
+			if diff < 0 {
+				sign = ""
+			}
+			fmt.Printf("DISCARD ✗ (%.0fms → %.0fms, %s%.0fms)\n", beforeMs, afterMs, sign, diff)
 			o.revertChange(proposal.File, originalContent)
 			o.state.Attempts = append(o.state.Attempts, PageAttempt{
 				Hypothesis: proposal.Hypothesis,
@@ -407,7 +412,7 @@ func (o *PageOptimizer) revertChange(file, originalContent string) {
 	os.WriteFile(file, []byte(originalContent), 0644)
 }
 
-func (o *PageOptimizer) compareXHRTimings(before, after *pagebench.PageStats) bool {
+func (o *PageOptimizer) compareXHRTimings(before, after *pagebench.PageStats) (bool, float64, float64) {
 	beforeTotal := time.Duration(0)
 	afterTotal := time.Duration(0)
 
@@ -423,8 +428,11 @@ func (o *PageOptimizer) compareXHRTimings(before, after *pagebench.PageStats) bo
 		}
 	}
 
-	improvement := float64(beforeTotal-afterTotal) / float64(beforeTotal)
-	return improvement > 0.05
+	beforeMs := float64(beforeTotal.Milliseconds())
+	afterMs := float64(afterTotal.Milliseconds())
+	
+	improvement := (beforeMs - afterMs) / beforeMs
+	return improvement > 0.05, beforeMs, afterMs
 }
 
 func (o *PageOptimizer) printSummary() {
