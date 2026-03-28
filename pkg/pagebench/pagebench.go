@@ -158,18 +158,31 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	if len(page.LocalStorage) > 0 || len(page.SessionStorage) > 0 {
 		// Navigate to origin to establish context
 		origin := extractOrigin(page.URL)
+		fmt.Printf("  Setting up storage at origin: %s\n", origin)
 		pg.Goto(origin, playwright.PageGotoOptions{
 			WaitUntil: playwright.WaitUntilStateCommit,
 		})
 		
 		// Set localStorage
 		for key, value := range page.LocalStorage {
+			fmt.Printf("  Setting localStorage[%s] = %s...\n", key, truncate(value, 50))
 			pg.Evaluate(fmt.Sprintf(`localStorage.setItem(%q, %q)`, key, value))
 		}
 		
 		// Set sessionStorage
 		for key, value := range page.SessionStorage {
+			fmt.Printf("  Setting sessionStorage[%s] = %s...\n", key, truncate(value, 50))
 			pg.Evaluate(fmt.Sprintf(`sessionStorage.setItem(%q, %q)`, key, value))
+		}
+		
+		// Verify it was set
+		for key := range page.LocalStorage {
+			result, _ := pg.Evaluate(fmt.Sprintf(`localStorage.getItem(%q)`, key))
+			if result == nil {
+				fmt.Printf("  WARNING: localStorage[%s] is nil after setting!\n", key)
+			} else {
+				fmt.Printf("  Verified localStorage[%s] = %s...\n", key, truncate(fmt.Sprintf("%v", result), 50))
+			}
 		}
 	}
 
@@ -341,4 +354,11 @@ func extractOrigin(url string) string {
 		return url
 	}
 	return url[:start+3+end]
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
