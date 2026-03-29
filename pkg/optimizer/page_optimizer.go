@@ -512,25 +512,26 @@ func (o *PageOptimizer) runClaudeCLI(worktreePath, hypothesis, change string) er
 	}
 
 	// Build a specific task for Claude CLI
-	task := fmt.Sprintf(`Make this optimization:
+	task := fmt.Sprintf(`Make this optimization for the "%s" page:
 
 HYPOTHESIS: %s
 
 CHANGE: %s
 
-CONSTRAINT: Only modify files that are part of the page route making these API calls:
+STRICT SCOPE - only edit:
+1. Files with "%s" in the filename or path (the page being optimized)
+2. Shared query/API config files (query.tsx, query-client.ts, api.ts)
+3. Direct parent components that render this page
+
+DO NOT EDIT files for other features. If you find yourself editing installer, license, customer, or other unrelated components - STOP and exit.
+
+API calls made by this page:
 %s
 
-To find relevant files:
-1. First grep for the API paths above to find which files call them
-2. Only edit those files or their direct imports
-3. Do NOT edit unrelated components that happen to use similar patterns
-
 Instructions:
-1. Find the relevant code by grepping for the API paths
-2. Make the necessary changes
-3. Focus on client-side .tsx/.jsx/.ts/.js files
-4. Exit when done`, hypothesis, change, strings.Join(apiPaths, "\n"))
+1. Find the %s route/page component first
+2. Make targeted changes to reduce redundant API calls
+3. Exit when done`, o.name, hypothesis, change, o.name, strings.Join(apiPaths, "\n"), o.name)
 
 	cmd := exec.Command(claudePath,
 		"--print",
