@@ -161,10 +161,10 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 			continue
 		}
 
-		improved, beforeMs, afterMs := o.compareXHRTimings(o.state.CurrentStats, afterStats)
+		improved, beforeMs, afterMs, beforeCount, afterCount := o.compareXHRTimings(o.state.CurrentStats, afterStats)
 
 		if improved {
-			fmt.Printf("KEEP ✓ (%.0fms → %.0fms, -%.0f%%)\n", beforeMs, afterMs, (beforeMs-afterMs)/beforeMs*100)
+			fmt.Printf("KEEP ✓ (%.0fms → %.0fms, %d → %d reqs)\n", beforeMs, afterMs, beforeCount, afterCount)
 			o.state.CurrentStats = afterStats
 			o.state.Attempts = append(o.state.Attempts, PageAttempt{
 				Hypothesis: proposal.Hypothesis,
@@ -179,7 +179,7 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 			if diff < 0 {
 				sign = ""
 			}
-			fmt.Printf("DISCARD ✗ (%.0fms → %.0fms, %s%.0fms)\n", beforeMs, afterMs, sign, diff)
+			fmt.Printf("DISCARD ✗ (%.0fms → %.0fms, %s%.0fms, %d → %d reqs)\n", beforeMs, afterMs, sign, diff, beforeCount, afterCount)
 			o.revertChange(proposal.File, originalContent)
 			o.state.Attempts = append(o.state.Attempts, PageAttempt{
 				Hypothesis: proposal.Hypothesis,
@@ -418,7 +418,7 @@ func (o *PageOptimizer) revertChange(file, originalContent string) {
 	os.WriteFile(file, []byte(originalContent), 0644)
 }
 
-func (o *PageOptimizer) compareXHRTimings(before, after *pagebench.PageStats) (bool, float64, float64) {
+func (o *PageOptimizer) compareXHRTimings(before, after *pagebench.PageStats) (bool, float64, float64, int, int) {
 	beforeTotal := time.Duration(0)
 	afterTotal := time.Duration(0)
 	beforeXHRCount := 0
@@ -465,7 +465,7 @@ func (o *PageOptimizer) compareXHRTimings(before, after *pagebench.PageStats) (b
 	reducedRedundant := afterRedundant < beforeRedundant && notSlowerThan10Pct
 	reducedRequests := afterXHRCount < beforeXHRCount && notSlowerThan10Pct
 	
-	return timingImproved || reducedRedundant || reducedRequests, beforeMs, afterMs
+	return timingImproved || reducedRedundant || reducedRequests, beforeMs, afterMs, beforeXHRCount, afterXHRCount
 }
 
 func (o *PageOptimizer) printSummary() {
