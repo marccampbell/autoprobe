@@ -234,7 +234,21 @@ func (o *PageOptimizer) runClaude(worktreePath, prompt string) error {
 	defer os.Remove(promptFile)
 
 	// Run Claude CLI
-	cmd := exec.Command("claude", 
+	// Look for claude in common locations
+	claudePath := "claude"
+	for _, path := range []string{
+		"/usr/local/bin/claude",
+		"/opt/homebrew/bin/claude",
+		os.Getenv("HOME") + "/.npm-global/bin/claude",
+		os.Getenv("HOME") + "/.local/bin/claude",
+	} {
+		if _, err := os.Stat(path); err == nil {
+			claudePath = path
+			break
+		}
+	}
+	
+	cmd := exec.Command(claudePath,
 		"--print",  // Non-interactive
 		"--dangerously-skip-permissions", // Allow file writes
 		prompt,
