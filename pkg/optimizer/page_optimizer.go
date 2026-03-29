@@ -290,6 +290,12 @@ func (o *PageOptimizer) gatherCodeContext(slowRequests []pagebench.RequestInfo) 
 func (o *PageOptimizer) explore(codeContext string, slowRequests []pagebench.RequestInfo) (string, error) {
 	prompt := `You are a code explorer. Investigate the codebase to reduce XHR request overhead.
 
+AVAILABLE TOOLS (use only these exact names):
+- read_file: Read a file. Args: {"path": "path/to/file"}
+- list_files: List directory contents. Args: {"path": "directory/path"}
+- grep: Search for pattern in files. Args: {"pattern": "search text", "include": "*.tsx,*.ts"}
+- glob: Find files by pattern. Args: {"pattern": "**/*.tsx"}
+
 START WITH CLIENT-SIDE (check these first):
 1. Components making the same API call multiple times
 2. useEffect hooks with wrong/missing dependencies causing re-fetches
@@ -302,12 +308,11 @@ THEN IF NEEDED (API changes):
 7. API responses returning too much data
 
 WORKFLOW:
-1. grep for the API paths in .tsx/.jsx files
-2. read_file to examine the React components
+1. Use grep to find API paths in .tsx/.jsx files
+2. Use read_file to examine React components
 3. Look at useEffect, useQuery, useFetch patterns
-4. If client-side looks fine, check API handlers
 
-Output: List specific files and code patterns that are problematic. Prioritize client-side issues.`
+Output: List specific files and code patterns that are problematic.`
 
 	var userPrompt strings.Builder
 	if len(o.state.Attempts) > 0 {
