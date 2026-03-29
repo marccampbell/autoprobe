@@ -302,28 +302,17 @@ func (o *PageOptimizer) gatherCodeContext(slowRequests []pagebench.RequestInfo) 
 }
 
 func (o *PageOptimizer) explore(codeContext string, slowRequests []pagebench.RequestInfo) (string, error) {
-	prompt := `You are a code explorer.
+	prompt := `You are a code explorer. You MUST use tools to investigate. Do not explain what you will do - just call the tools.
 
-TOOLS YOU CAN USE (these are the ONLY tools available):
-1. grep - search files: {"pattern": "search text", "include": "*.tsx"}
-2. read_file - read a file: {"path": "path/to/file.tsx"}  
-3. list_files - list directory: {"path": "src/components"}
-4. glob - find files: {"pattern": "**/*.tsx"}
-
-DO NOT use any other tools. DO NOT use repo_browser, print_tree, or any tool not listed above.
+AVAILABLE TOOLS:
+- grep: {"pattern": "text", "include": "*.tsx"}
+- read_file: {"path": "file.tsx"}
+- list_files: {"path": "directory"}
+- repo_browser.print_tree: {"path": "directory", "depth": 2}
 
 TASK: Find client-side code causing redundant XHR requests.
 
-Look for:
-- Same API called multiple times
-- useEffect with bad dependencies
-- Missing caching (short staleTime)
-- Components re-rendering and fetching
-
-STEPS:
-1. grep for API paths in .tsx files
-2. read_file to look at the components
-3. Summarize what you find`
+START IMMEDIATELY by calling grep or read_file. Do not output any text before using a tool.`
 
 	var userPrompt strings.Builder
 	if len(o.state.Attempts) > 0 {
