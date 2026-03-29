@@ -1,6 +1,7 @@
 package optimizer
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,19 +10,30 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marccampbell/autoprobe/pkg/claude"
 	"github.com/marccampbell/autoprobe/pkg/config"
+	"github.com/marccampbell/autoprobe/pkg/fireworks"
+	"github.com/marccampbell/autoprobe/pkg/groq"
 	"github.com/marccampbell/autoprobe/pkg/pagebench"
+	"github.com/marccampbell/autoprobe/pkg/tools"
 )
+
+// FastClient interface for exploration models (Groq, Fireworks)
+type FastClient interface {
+	RunWithTools(systemPrompt string, userPrompt string, availableTools []tools.Tool, onMessage func(string), onToolUse func(string)) error
+}
 
 // PageOptimizer runs the optimization loop for pages
 type PageOptimizer struct {
-	cfg     *config.Config
-	page    *config.PageConfig
-	name    string
-	state   *PageRunState
-	dryRun  bool
-	verbose bool
-	repoRoot string
+	cfg        *config.Config
+	page       *config.PageConfig
+	name       string
+	state      *PageRunState
+	client     *claude.Client   // For proposals
+	fastClient FastClient       // For exploration
+	dryRun     bool
+	verbose    bool
+	repoRoot   string
 }
 
 // PageRunState tracks state for a page optimization run
@@ -36,9 +48,10 @@ type PageRunState struct {
 
 // PageAttempt records a single optimization attempt
 type PageAttempt struct {
-	Hypothesis    string
-	FilesChanged  []string
-	Kept          bool
+	Hypothesis   string
+	Change       string
+	FilesChanged []string
+	Kept         bool
 }
 
 // NewPageOptimizer creates a new page optimizer
@@ -51,13 +64,31 @@ func NewPageOptimizer(cfg *config.Config, pageName string, page *config.PageConf
 	}
 	repoRoot := strings.TrimSpace(string(output))
 
+	// Claude client for proposals
+	claudeClient, err := claude.NewClient()
+	if err != nil {
+		return nil, err
+	}
+
+	// Fast client for exploration (Groq preferred, Fireworks fallback)
+	var fastClient FastClient
+	if groqClient, err := groq.NewClient(); err == nil {
+		fastClient = groqClient
+	} else if fwClient, err := fireworks.NewClient(); err == nil {
+		fastClient = fwClient
+	} else {
+		return nil, fmt.Errorf("page optimization requires GROQ_API_KEY or FIREWORKS_API_KEY for fast exploration")
+	}
+
 	return &PageOptimizer{
-		cfg:      cfg,
-		page:     page,
-		name:     pageName,
-		dryRun:   dryRun,
-		verbose:  verbose,
-		repoRoot: repoRoot,
+		cfg:        cfg,
+		page:       page,
+		name:       pageName,
+		client:     claudeClient,
+		fastClient: fastClient,
+		dryRun:     dryRun,
+		verbose:    verbose,
+		repoRoot:   repoRoot,
 	}, nil
 }
 
@@ -91,8 +122,10 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 		fmt.Printf("  %d. %s (%s)\n", i+1, truncateURLMiddle(req.URL, 60), req.Duration.Round(time.Millisecond))
 	}
 
-	// Build the prompt for Claude
-	prompt := o.buildPrompt(slowRequests)
+	// Pre-gather context
+	fmt.Print("\nGathering code context...")
+	codeContext := o.gatherCodeContext(slowRequests)
+	fmt.Println(" done")
 
 	// Main optimization loop
 	for {
@@ -104,40 +137,59 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 		o.state.Iteration++
 		fmt.Printf("\n=== Iteration %d ===\n", o.state.Iteration)
 
+		// Phase 1: Fast exploration with Groq/Fireworks
+		fmt.Print("Exploring codebase...")
+		findings, err := o.explore(codeContext, slowRequests)
+		if err != nil {
+			fmt.Printf(" failed: %v\n", err)
+			continue
+		}
+		fmt.Println(" done")
+
+		// Phase 2: Generate hypothesis with Claude API
+		fmt.Print("Generating hypothesis...")
+		hypothesis, change, err := o.generateHypothesis(findings, slowRequests)
+		if err != nil {
+			fmt.Printf(" failed: %v\n", err)
+			continue
+		}
+		if hypothesis == "" {
+			fmt.Println(" no more optimizations found")
+			break
+		}
+		fmt.Println(" done")
+
+		fmt.Printf("\nHypothesis: %s\n", hypothesis)
+		fmt.Printf("Change: %s\n", change)
+
 		if o.dryRun {
-			fmt.Println("[DRY RUN] Would create worktree and run Claude")
-			fmt.Printf("Prompt:\n%s\n", prompt)
-			break
-		}
-
-		// Create worktree for this experiment
-		worktreePath, branchName, err := o.createWorktree()
-		if err != nil {
-			fmt.Printf("Failed to create worktree: %v\n", err)
-			break
-		}
-
-		fmt.Printf("Worktree: %s\n", worktreePath)
-
-		// Run Claude CLI in the worktree
-		fmt.Println("Running Claude...")
-		err = o.runClaude(worktreePath, prompt)
-		if err != nil {
-			fmt.Printf("Claude failed: %v\n", err)
-			o.cleanupWorktree(worktreePath, branchName)
+			fmt.Println("\n[DRY RUN] Would create worktree and run Claude CLI")
 			continue
 		}
 
+		// Phase 3: Create worktree and run Claude CLI to make changes
+		worktreePath, branchName, err := o.createWorktree()
+		if err != nil {
+			fmt.Printf("Failed to create worktree: %v\n", err)
+			continue
+		}
+
+		fmt.Print("Applying changes with Claude CLI...")
+		err = o.runClaudeCLI(worktreePath, hypothesis, change)
+		if err != nil {
+			fmt.Printf(" failed: %v\n", err)
+			o.cleanupWorktree(worktreePath, branchName)
+			continue
+		}
+		fmt.Println(" done")
+
 		// Commit changes in worktree
-		fmt.Print("Committing changes... ")
 		commitHash, changedFiles, err := o.commitWorktreeChanges(worktreePath)
 		if err != nil || len(changedFiles) == 0 {
-			fmt.Println("no changes made")
+			fmt.Println("No changes made")
 			o.cleanupWorktree(worktreePath, branchName)
-			fmt.Println("No more optimizations identified.")
-			break
+			continue
 		}
-		fmt.Printf("done (%d files)\n", len(changedFiles))
 		fmt.Printf("Changed: %s\n", strings.Join(changedFiles, ", "))
 
 		// Cherry-pick to main repo for benchmarking
@@ -150,7 +202,7 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 		}
 		fmt.Println("done")
 
-		// Benchmark (now using the real dev server with cherry-picked changes)
+		// Benchmark
 		fmt.Print("Benchmarking (3 runs)... ")
 		afterStats, err := pagebench.RunMultiple(o.name, o.page, 3, false)
 		if err != nil {
@@ -164,13 +216,13 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 
 		if improved {
 			fmt.Printf("KEEP ✓ (%.0fms → %.0fms, %d → %d reqs)\n", beforeMs, afterMs, beforeCount, afterCount)
-			// Changes are already in main, just leave them
 			o.state.CurrentStats = afterStats
 			o.state.Attempts = append(o.state.Attempts, PageAttempt{
+				Hypothesis:   hypothesis,
+				Change:       change,
 				FilesChanged: changedFiles,
 				Kept:         true,
 			})
-			prompt = o.buildPromptWithHistory(slowRequests)
 		} else {
 			diff := afterMs - beforeMs
 			sign := "+"
@@ -178,18 +230,15 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 				sign = ""
 			}
 			fmt.Printf("DISCARD ✗ (%.0fms → %.0fms, %s%.0fms, %d → %d reqs)\n", beforeMs, afterMs, sign, diff, beforeCount, afterCount)
-			
-			// Revert the cherry-pick
 			o.revertCherryPick()
-			
 			o.state.Attempts = append(o.state.Attempts, PageAttempt{
+				Hypothesis:   hypothesis,
+				Change:       change,
 				FilesChanged: changedFiles,
 				Kept:         false,
 			})
-			prompt = o.buildPromptWithHistory(slowRequests)
 		}
 
-		// Cleanup worktree
 		o.cleanupWorktree(worktreePath, branchName)
 	}
 
@@ -197,12 +246,156 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 	return nil
 }
 
+func (o *PageOptimizer) gatherCodeContext(slowRequests []pagebench.RequestInfo) string {
+	var ctx strings.Builder
+
+	// Project structure
+	result := tools.ExecuteTool(tools.ToolUse{
+		Name:  "list_files",
+		Input: map[string]interface{}{"path": "."},
+	})
+	ctx.WriteString("## Project Structure\n```\n")
+	ctx.WriteString(result.Content)
+	ctx.WriteString("\n```\n\n")
+
+	// Grep for API paths
+	seenPaths := make(map[string]bool)
+	for _, req := range slowRequests {
+		path := extractAPIPath(req.URL)
+		if path == "" || seenPaths[path] {
+			continue
+		}
+		seenPaths[path] = true
+
+		result := tools.ExecuteTool(tools.ToolUse{
+			Name: "grep",
+			Input: map[string]interface{}{
+				"pattern": path,
+				"include": "*.tsx,*.ts,*.jsx,*.js",
+			},
+		})
+
+		if !result.IsError && result.Content != "No matches found" {
+			content := result.Content
+			if len(content) > 3000 {
+				content = content[:3000] + "\n... (truncated)"
+			}
+			ctx.WriteString(fmt.Sprintf("## Code referencing %s\n```\n%s\n```\n\n", path, content))
+		}
+	}
+
+	return ctx.String()
+}
+
+func (o *PageOptimizer) explore(codeContext string, slowRequests []pagebench.RequestInfo) (string, error) {
+	prompt := `You are a code explorer. Investigate the codebase to find optimization opportunities.
+
+TASK: Find client-side code causing slow/redundant XHR requests.
+
+WORKFLOW:
+1. Use grep to find where API calls are made
+2. Use read_file to examine components
+3. Identify issues (redundant calls, missing caching, bad useEffect deps)
+4. Summarize your findings
+
+Be concise. Output findings, not narration.`
+
+	var userPrompt strings.Builder
+	if len(o.state.Attempts) > 0 {
+		userPrompt.WriteString("## Previous Attempts (find something DIFFERENT)\n")
+		for _, a := range o.state.Attempts {
+			status := "DISCARDED"
+			if a.Kept {
+				status = "KEPT"
+			}
+			userPrompt.WriteString(fmt.Sprintf("- [%s] %s\n", status, a.Hypothesis))
+		}
+		userPrompt.WriteString("\n")
+	}
+
+	userPrompt.WriteString("## Slow Requests\n")
+	for _, req := range slowRequests {
+		userPrompt.WriteString(fmt.Sprintf("- %s %s (%s)\n", req.Method, req.URL, req.Duration.Round(time.Millisecond)))
+	}
+	userPrompt.WriteString("\n")
+	userPrompt.WriteString(codeContext)
+
+	availableTools := tools.GetTools(false)
+	var findings strings.Builder
+
+	onMessage := func(text string) {
+		findings.WriteString(text)
+		if o.verbose {
+			fmt.Print(text)
+		}
+	}
+
+	onToolUse := func(name string) {
+		if o.verbose {
+			fmt.Printf("\n[%s]\n", name)
+		} else {
+			fmt.Print(".")
+		}
+	}
+
+	err := o.fastClient.RunWithTools(prompt, userPrompt.String(), availableTools, onMessage, onToolUse)
+	if err != nil {
+		return "", err
+	}
+
+	return findings.String(), nil
+}
+
+func (o *PageOptimizer) generateHypothesis(findings string, slowRequests []pagebench.RequestInfo) (string, string, error) {
+	prompt := `Based on the exploration findings, propose ONE optimization.
+
+Output JSON only:
+{"hypothesis": "what's wrong", "change": "what to change"}
+
+Or if no optimization found:
+{"done": true}
+
+Be specific about the issue and fix.`
+
+	context := fmt.Sprintf("## Exploration Findings\n%s\n\n## Slow Requests\n", findings)
+	for _, req := range slowRequests {
+		context += fmt.Sprintf("- %s %s (%s)\n", req.Method, req.URL, req.Duration.Round(time.Millisecond))
+	}
+
+	var response strings.Builder
+	err := o.client.Complete(prompt, context, func(text string) {
+		response.WriteString(text)
+	})
+	if err != nil {
+		return "", "", err
+	}
+
+	// Parse JSON
+	jsonStr := extractJSON(response.String())
+	if jsonStr == "" {
+		return "", "", fmt.Errorf("no JSON in response")
+	}
+
+	var result struct {
+		Hypothesis string `json:"hypothesis"`
+		Change     string `json:"change"`
+		Done       bool   `json:"done"`
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
+		return "", "", err
+	}
+
+	if result.Done {
+		return "", "", nil
+	}
+
+	return result.Hypothesis, result.Change, nil
+}
+
 func (o *PageOptimizer) createWorktree() (string, string, error) {
-	// Create unique branch and worktree path
 	branchName := fmt.Sprintf("autoprobe-exp-%d", time.Now().UnixNano())
 	worktreePath := filepath.Join(os.TempDir(), branchName)
 
-	// Create worktree from current HEAD
 	cmd := exec.Command("git", "worktree", "add", "-b", branchName, worktreePath, "HEAD")
 	cmd.Dir = o.repoRoot
 	output, err := cmd.CombinedOutput()
@@ -214,72 +407,64 @@ func (o *PageOptimizer) createWorktree() (string, string, error) {
 }
 
 func (o *PageOptimizer) cleanupWorktree(worktreePath, branchName string) {
-	// Remove worktree
 	cmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
 	cmd.Dir = o.repoRoot
 	cmd.Run()
 
-	// Delete branch
 	cmd = exec.Command("git", "branch", "-D", branchName)
 	cmd.Dir = o.repoRoot
 	cmd.Run()
 }
 
-func (o *PageOptimizer) runClaude(worktreePath, prompt string) error {
-	// Write prompt to temp file
-	promptFile := filepath.Join(worktreePath, ".autoprobe-prompt.txt")
-	if err := os.WriteFile(promptFile, []byte(prompt), 0644); err != nil {
-		return err
-	}
-	defer os.Remove(promptFile)
-
-	// Run Claude CLI
-	// Look for claude in common locations
+func (o *PageOptimizer) runClaudeCLI(worktreePath, hypothesis, change string) error {
+	// Find claude binary
 	claudePath := "claude"
 	for _, path := range []string{
 		os.Getenv("HOME") + "/.claude/local/claude",
 		"/usr/local/bin/claude",
 		"/opt/homebrew/bin/claude",
-		os.Getenv("HOME") + "/.npm-global/bin/claude",
-		os.Getenv("HOME") + "/.local/bin/claude",
 	} {
 		if _, err := os.Stat(path); err == nil {
 			claudePath = path
 			break
 		}
 	}
-	
+
+	// Build a specific task for Claude CLI
+	task := fmt.Sprintf(`Make this optimization:
+
+HYPOTHESIS: %s
+
+CHANGE: %s
+
+Instructions:
+1. Find the relevant code
+2. Make the necessary changes (may be multiple files)
+3. Focus on client-side .tsx/.jsx/.ts/.js files
+4. Exit when done`, hypothesis, change)
+
 	cmd := exec.Command(claudePath,
-		"--print",  // Non-interactive
-		"--dangerously-skip-permissions", // Allow file writes
-		prompt,
+		"--print",
+		"--dangerously-skip-permissions",
+		task,
 	)
 	cmd.Dir = worktreePath
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
+	
 	if o.verbose {
-		fmt.Println("--- Claude Output ---")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
 	}
 
-	err := cmd.Run()
-
-	if o.verbose {
-		fmt.Println("--- End Claude Output ---")
-	}
-
-	return err
+	return cmd.Run()
 }
 
 func (o *PageOptimizer) commitWorktreeChanges(worktreePath string) (string, []string, error) {
-	// Stage all changes
 	cmd := exec.Command("git", "add", "-A")
 	cmd.Dir = worktreePath
 	if err := cmd.Run(); err != nil {
-		return "", nil, fmt.Errorf("git add failed: %w", err)
+		return "", nil, err
 	}
 
-	// Get list of staged files
 	cmd = exec.Command("git", "diff", "--cached", "--name-only")
 	cmd.Dir = worktreePath
 	output, err := cmd.Output()
@@ -289,7 +474,7 @@ func (o *PageOptimizer) commitWorktreeChanges(worktreePath string) (string, []st
 
 	var files []string
 	for _, f := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		if f != "" && !strings.HasPrefix(f, ".autoprobe") {
+		if f != "" {
 			files = append(files, f)
 		}
 	}
@@ -298,14 +483,12 @@ func (o *PageOptimizer) commitWorktreeChanges(worktreePath string) (string, []st
 		return "", nil, nil
 	}
 
-	// Commit
 	cmd = exec.Command("git", "commit", "-m", "autoprobe: optimization attempt")
 	cmd.Dir = worktreePath
 	if err := cmd.Run(); err != nil {
-		return "", nil, fmt.Errorf("git commit failed: %w", err)
+		return "", nil, err
 	}
 
-	// Get commit hash
 	cmd = exec.Command("git", "rev-parse", "HEAD")
 	cmd.Dir = worktreePath
 	output, err = cmd.Output()
@@ -327,62 +510,9 @@ func (o *PageOptimizer) cherryPick(commitHash string) error {
 }
 
 func (o *PageOptimizer) revertCherryPick() {
-	// Reset staged changes and restore working tree
 	cmd := exec.Command("git", "reset", "--hard", "HEAD")
 	cmd.Dir = o.repoRoot
 	cmd.Run()
-}
-
-func (o *PageOptimizer) buildPrompt(slowRequests []pagebench.RequestInfo) string {
-	var sb strings.Builder
-
-	sb.WriteString("You are optimizing a web page's frontend performance.\n\n")
-	sb.WriteString("## Goal\n")
-	sb.WriteString("Reduce slow or redundant XHR/fetch requests by modifying the client-side code.\n\n")
-
-	sb.WriteString("## Slow Requests to Optimize\n")
-	for _, req := range slowRequests {
-		sb.WriteString(fmt.Sprintf("- %s %s (%s)\n", req.Method, req.URL, req.Duration.Round(time.Millisecond)))
-	}
-	sb.WriteString("\n")
-
-	sb.WriteString("## Common Issues\n")
-	sb.WriteString("1. Redundant API calls - same endpoint called multiple times\n")
-	sb.WriteString("2. useEffect with missing/wrong deps causing re-fetches\n")
-	sb.WriteString("3. Missing React Query/SWR caching\n")
-	sb.WriteString("4. Sequential requests that could be parallel\n")
-	sb.WriteString("5. Components re-rendering and triggering unnecessary fetches\n\n")
-
-	sb.WriteString("## Instructions\n")
-	sb.WriteString("1. Investigate the codebase to find the components making these requests\n")
-	sb.WriteString("2. Identify ONE optimization opportunity\n")
-	sb.WriteString("3. Make the necessary code changes (may be multiple files)\n")
-	sb.WriteString("4. Focus on client-side .tsx/.jsx/.ts/.js files\n")
-	sb.WriteString("5. Do NOT modify server-side/API code\n\n")
-
-	sb.WriteString("Make your changes, then exit when done.\n")
-
-	return sb.String()
-}
-
-func (o *PageOptimizer) buildPromptWithHistory(slowRequests []pagebench.RequestInfo) string {
-	var sb strings.Builder
-
-	sb.WriteString(o.buildPrompt(slowRequests))
-
-	if len(o.state.Attempts) > 0 {
-		sb.WriteString("\n## Previous Attempts (DO NOT REPEAT)\n")
-		for i, a := range o.state.Attempts {
-			status := "DISCARDED"
-			if a.Kept {
-				status = "KEPT"
-			}
-			sb.WriteString(fmt.Sprintf("%d. [%s] Changed: %s\n", i+1, status, strings.Join(a.FilesChanged, ", ")))
-		}
-		sb.WriteString("\nFind a DIFFERENT optimization.\n")
-	}
-
-	return sb.String()
 }
 
 func (o *PageOptimizer) getSlowestXHR(stats *pagebench.PageStats, n int) []pagebench.RequestInfo {
@@ -429,7 +559,6 @@ func (o *PageOptimizer) compareXHRTimings(before, after *pagebench.PageStats) (b
 	beforeMs := float64(beforeTotal.Milliseconds())
 	afterMs := float64(afterTotal.Milliseconds())
 
-	// Count redundant (identical) XHR requests
 	beforeRedundant := 0
 	afterRedundant := 0
 	for _, dup := range before.RedundantXHR {
@@ -472,10 +601,28 @@ func (o *PageOptimizer) printSummary() {
 		fmt.Printf("\nKept:\n")
 		for _, a := range o.state.Attempts {
 			if a.Kept {
-				fmt.Printf("  ✓ %s\n", strings.Join(a.FilesChanged, ", "))
+				fmt.Printf("  ✓ %s\n    Files: %s\n", a.Hypothesis, strings.Join(a.FilesChanged, ", "))
 			}
 		}
 	}
+}
+
+func extractAPIPath(url string) string {
+	if idx := strings.Index(url, "://"); idx != -1 {
+		rest := url[idx+3:]
+		if idx := strings.Index(rest, "/"); idx != -1 {
+			path := rest[idx:]
+			if idx := strings.Index(path, "?"); idx != -1 {
+				path = path[:idx]
+			}
+			parts := strings.Split(path, "/")
+			if len(parts) >= 3 {
+				return "/" + parts[1] + "/" + parts[2]
+			}
+			return path
+		}
+	}
+	return ""
 }
 
 func truncateURLMiddle(url string, maxLen int) string {
