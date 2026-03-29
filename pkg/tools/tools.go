@@ -34,6 +34,42 @@ type ToolResult struct {
 func GetTools(allowWrite bool) []Tool {
 	tools := []Tool{
 		{
+			Name:        "repo_browser.print_tree",
+			Description: "Print a tree view of the repository structure. Shows files and directories.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "The directory path to start from (default: current directory)",
+					},
+					"depth": map[string]interface{}{
+						"type":        "integer",
+						"description": "Maximum depth to traverse (default: 3)",
+					},
+				},
+				"required": []string{},
+			},
+		},
+		{
+			Name:        "print_tree",
+			Description: "Alias for repo_browser.print_tree. Print a tree view of files and directories.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "The directory path to start from (default: current directory)",
+					},
+					"depth": map[string]interface{}{
+						"type":        "integer",
+						"description": "Maximum depth to traverse (default: 3)",
+					},
+				},
+				"required": []string{},
+			},
+		},
+		{
 			Name:        "read_file",
 			Description: "Read the contents of a file at the specified path. Returns the file content as a string.",
 			InputSchema: map[string]interface{}{
@@ -156,6 +192,8 @@ func ExecuteTool(tool ToolUse) ToolResult {
 	var isError bool
 
 	switch tool.Name {
+	case "repo_browser.print_tree", "print_tree":
+		content, isError = executePrintTree(tool.Input)
 	case "read_file":
 		content, isError = executeReadFile(tool.Input)
 	case "list_files":
@@ -178,6 +216,45 @@ func ExecuteTool(tool ToolUse) ToolResult {
 		Content:   content,
 		IsError:   isError,
 	}
+}
+
+func executePrintTree(input map[string]interface{}) (string, bool) {
+	path := "."
+	if p, ok := input["path"].(string); ok && p != "" {
+		path = p
+	}
+
+	depth := 3
+	if d, ok := input["depth"].(float64); ok {
+		depth = int(d)
+	}
+
+	// Use find command to generate tree
+	cmd := exec.Command("find", path, "-maxdepth", fmt.Sprintf("%d", depth), "-type", "f", "-o", "-type", "d")
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err), true
+	}
+
+	// Format as tree-like output
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var result strings.Builder
+	for _, line := range lines {
+		if line == "" || line == "." {
+			continue
+		}
+		// Simple indentation based on depth
+		parts := strings.Split(line, "/")
+		indent := strings.Repeat("  ", len(parts)-1)
+		result.WriteString(indent + parts[len(parts)-1] + "\n")
+	}
+
+	content := result.String()
+	if len(content) > 10000 {
+		content = content[:10000] + "\n... (truncated)"
+	}
+
+	return content, false
 }
 
 func executeReadFile(input map[string]interface{}) (string, bool) {
