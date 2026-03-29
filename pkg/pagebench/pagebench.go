@@ -537,42 +537,64 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
-// truncateURLMiddle keeps the start and end, truncates the middle
-// For http://vendor-api.localhost:8000/v3/app/380BNB1ocintPMudu.../channels
-// Shows: http://vendor-api...8000/v3/app/.../channels
+// truncateURLMiddle prioritizes showing the path and query params
+// Truncates the domain/host part, keeps the meaningful path
 func truncateURLMiddle(url string, maxLen int) string {
 	if len(url) <= maxLen {
 		return url
 	}
 	
 	// Find where path starts
-	pathStart := strings.Index(url, "://")
-	if pathStart != -1 {
-		pathStart = strings.Index(url[pathStart+3:], "/")
-		if pathStart != -1 {
-			pathStart += len(url[:strings.Index(url, "://")+3])
+	schemeEnd := strings.Index(url, "://")
+	if schemeEnd == -1 {
+		return url[:maxLen-3] + "..."
+	}
+	
+	hostStart := schemeEnd + 3
+	pathStart := strings.Index(url[hostStart:], "/")
+	if pathStart == -1 {
+		return url[:maxLen-3] + "..."
+	}
+	pathStart += hostStart
+	
+	path := url[pathStart:] // includes query string
+	
+	// If path fits, just truncate domain
+	if len(path) <= maxLen-10 {
+		// Show shortened host + full path
+		host := url[hostStart:pathStart]
+		availForHost := maxLen - len(path) - 3
+		if availForHost > 5 && len(host) > availForHost {
+			host = host[:availForHost-3] + "..."
 		}
+		return url[:schemeEnd+3] + host + path
 	}
 	
-	// Keep first ~20 chars and last ~35 chars of path
-	keepStart := 25
-	keepEnd := maxLen - keepStart - 3 // 3 for "..."
-	if keepEnd < 20 {
-		keepEnd = 20
-	}
-	
-	if pathStart > 0 && pathStart < len(url) {
-		// Truncate domain if needed, keep more of path
-		path := url[pathStart:]
-		if len(path) <= keepEnd+10 {
-			// Path is short, truncate domain instead
-			domain := url[:pathStart]
-			if len(domain) > keepStart {
-				domain = domain[:15] + "..." + domain[len(domain)-10:]
-			}
-			return domain + path
+	// Path is too long - truncate middle of path, keep query params visible
+	queryStart := strings.Index(path, "?")
+	if queryStart > 0 {
+		pathPart := path[:queryStart]
+		queryPart := path[queryStart:]
+		
+		// Keep more of the query string since that differentiates requests
+		availForPath := maxLen - len(queryPart) - 15 // 15 for shortened host
+		if availForPath > 10 && len(pathPart) > availForPath {
+			pathPart = pathPart[:availForPath/2] + "..." + pathPart[len(pathPart)-availForPath/2:]
 		}
+		
+		// Shortened host
+		shortHost := url[hostStart:pathStart]
+		if len(shortHost) > 12 {
+			shortHost = shortHost[:9] + "..."
+		}
+		
+		result := url[:schemeEnd+3] + shortHost + pathPart + queryPart
+		if len(result) > maxLen {
+			return result[:maxLen-3] + "..."
+		}
+		return result
 	}
 	
-	return url[:keepStart] + "..." + url[len(url)-keepEnd:]
+	// No query string, just truncate the path
+	return url[:maxLen/2] + "..." + url[len(url)-maxLen/2+3:]
 }
