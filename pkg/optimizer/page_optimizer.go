@@ -70,14 +70,14 @@ func NewPageOptimizer(cfg *config.Config, pageName string, page *config.PageConf
 		return nil, err
 	}
 
-	// Fast client for exploration (Fireworks preferred - better tool calling than Groq/GPT-OSS)
+	// Fast client for exploration (Groq preferred for speed, Fireworks fallback)
 	var fastClient FastClient
-	if fwClient, err := fireworks.NewClient(); err == nil {
-		fastClient = fwClient
-	} else if groqClient, err := groq.NewClient(); err == nil {
+	if groqClient, err := groq.NewClient(); err == nil {
 		fastClient = groqClient
+	} else if fwClient, err := fireworks.NewClient(); err == nil {
+		fastClient = fwClient
 	} else {
-		return nil, fmt.Errorf("page optimization requires FIREWORKS_API_KEY or GROQ_API_KEY for fast exploration")
+		return nil, fmt.Errorf("page optimization requires GROQ_API_KEY or FIREWORKS_API_KEY for fast exploration")
 	}
 
 	return &PageOptimizer{

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/marccampbell/autoprobe/pkg/tools"
@@ -117,12 +118,21 @@ func convertTools(internalTools []tools.Tool) []Tool {
 
 // RunWithTools executes a prompt with tools until completion
 func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableTools []tools.Tool, onMessage func(string), onToolUse func(string)) error {
+	// Build list of valid tool names for error recovery
+	validTools := make([]string, len(availableTools))
+	for i, t := range availableTools {
+		validTools[i] = t.Name
+	}
+	toolList := strings.Join(validTools, ", ")
+
 	messages := []Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userPrompt},
 	}
 
 	groqTools := convertTools(availableTools)
+	toolErrorRetries := 0
+	maxToolErrorRetries := 2
 
 	for turn := 0; turn < maxExplorationTurns; turn++ {
 		// Nudge to wrap up near the end
@@ -135,6 +145,16 @@ func (c *Client) RunWithTools(systemPrompt string, userPrompt string, availableT
 
 		resp, err := c.sendRequest(messages, groqTools)
 		if err != nil {
+			// Check if it's a tool validation error
+			if strings.Contains(err.Error(), "tool_use_failed") && toolErrorRetries < maxToolErrorRetries {
+				toolErrorRetries++
+				// Add a correction message and retry
+				messages = append(messages, Message{
+					Role:    "user",
+					Content: fmt.Sprintf("ERROR: You tried to use an invalid tool. Only use these tools: %s. Try again.", toolList),
+				})
+				continue
+			}
 			return err
 		}
 
