@@ -214,6 +214,42 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 
 		improved, beforeMs, afterMs, beforeCount, afterCount := o.compareXHRTimings(o.state.CurrentStats, afterStats)
 
+		// Check for new console errors (regression)
+		newErrors := pagebench.FindNewConsoleErrors(o.state.CurrentStats, afterStats)
+		if len(newErrors) > 0 {
+			fmt.Printf("DISCARD ✗ — new console errors:\n")
+			for _, e := range newErrors {
+				if len(e) > 100 {
+					e = e[:100] + "..."
+				}
+				fmt.Printf("  • %s\n", e)
+			}
+			o.revertCherryPick()
+			o.cleanupWorktree(worktreePath, branchName)
+			o.state.Attempts = append(o.state.Attempts, PageAttempt{
+				Hypothesis:   hypothesis,
+				Change:       change,
+				FilesChanged: changedFiles,
+				Kept:         false,
+			})
+			continue
+		}
+
+		// Check visual regression
+		similarity, err := pagebench.CompareScreenshots(o.state.CurrentStats.ScreenshotPath, afterStats.ScreenshotPath)
+		if err == nil && similarity < 0.85 {
+			fmt.Printf("DISCARD ✗ — visual regression (%.0f%% similar, need 85%%+)\n", similarity*100)
+			o.revertCherryPick()
+			o.cleanupWorktree(worktreePath, branchName)
+			o.state.Attempts = append(o.state.Attempts, PageAttempt{
+				Hypothesis:   hypothesis,
+				Change:       change,
+				FilesChanged: changedFiles,
+				Kept:         false,
+			})
+			continue
+		}
+
 		if improved {
 			fmt.Printf("KEEP ✓ (%.0fms → %.0fms, %d → %d reqs)\n", beforeMs, afterMs, beforeCount, afterCount)
 			

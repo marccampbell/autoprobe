@@ -1,9 +1,13 @@
 package pagebench
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"image/png"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -48,6 +52,8 @@ type PageStats struct {
 	RedundantXHR     []DuplicateInfo       // XHR requests with identical responses
 	SlowRequests     []RequestInfo         // > 500ms
 	ByType           map[string]int        // xhr, fetch, script, etc.
+	ConsoleErrors    []string              // JS console errors
+	ScreenshotPath   string                // Path to screenshot file
 }
 
 // Run captures and analyzes a page load
@@ -123,19 +129,30 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	// Store response bodies for XHR (to detect duplicates)
 	xhrBodies := make(map[string][]string) // URL -> list of body hashes
 	
-	// Capture console messages (only in verbose mode)
-	if verbose {
-		pg.OnConsole(func(msg playwright.ConsoleMessage) {
-			msgType := msg.Type()
-			if msgType == "error" || msgType == "warning" {
-				fmt.Printf("  [CONSOLE %s] %s\n", strings.ToUpper(msgType), msg.Text())
-			}
-		})
-		
-		pg.OnPageError(func(err error) {
+	// Capture console errors (always, for regression detection)
+	var consoleErrors []string
+	var consoleErrorsMu sync.Mutex
+	
+	pg.OnConsole(func(msg playwright.ConsoleMessage) {
+		msgType := msg.Type()
+		if msgType == "error" {
+			consoleErrorsMu.Lock()
+			consoleErrors = append(consoleErrors, msg.Text())
+			consoleErrorsMu.Unlock()
+		}
+		if verbose && (msgType == "error" || msgType == "warning") {
+			fmt.Printf("  [CONSOLE %s] %s\n", strings.ToUpper(msgType), msg.Text())
+		}
+	})
+	
+	pg.OnPageError(func(err error) {
+		consoleErrorsMu.Lock()
+		consoleErrors = append(consoleErrors, "PAGE ERROR: "+err.Error())
+		consoleErrorsMu.Unlock()
+		if verbose {
 			fmt.Printf("  [PAGE ERROR] %s\n", err.Error())
-		})
-	}
+		}
+	})
 
 	// Listen at context level to catch all requests including from workers/subframes
 	context.OnRequest(func(req playwright.Request) {
@@ -244,19 +261,26 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	
 	fullyLoaded := time.Since(pageStart)
 	
-
-
-
+	// Take screenshot for visual regression
+	screenshotPath := filepath.Join(os.TempDir(), fmt.Sprintf("autoprobe-screenshot-%d.png", time.Now().UnixNano()))
+	pg.Screenshot(playwright.PageScreenshotOptions{
+		Path:     playwright.String(screenshotPath),
+		FullPage: playwright.Bool(true),
+	})
 
 	// Calculate stats
+	consoleErrorsMu.Lock()
 	stats := &PageStats{
-		URL:           page.URL,
-		FullyLoaded:   fullyLoaded,
-		TotalRequests: len(requests),
-		Requests:      requests,
-		Duplicates:    make(map[string]int),
-		ByType:        make(map[string]int),
+		URL:            page.URL,
+		FullyLoaded:    fullyLoaded,
+		TotalRequests:  len(requests),
+		Requests:       requests,
+		Duplicates:     make(map[string]int),
+		ByType:         make(map[string]int),
+		ConsoleErrors:  consoleErrors,
+		ScreenshotPath: screenshotPath,
 	}
+	consoleErrorsMu.Unlock()
 
 	// Find TTFB (first response time)
 	if len(requests) > 0 {
@@ -597,4 +621,77 @@ func truncateURLMiddle(url string, maxLen int) string {
 	
 	// No query string, just truncate the path
 	return url[:maxLen/2] + "..." + url[len(url)-maxLen/2+3:]
+}
+
+// FindNewConsoleErrors returns errors in after that weren't in before
+func FindNewConsoleErrors(before, after *PageStats) []string {
+	beforeSet := make(map[string]bool)
+	for _, e := range before.ConsoleErrors {
+		beforeSet[e] = true
+	}
+	
+	var newErrors []string
+	for _, e := range after.ConsoleErrors {
+		if !beforeSet[e] {
+			newErrors = append(newErrors, e)
+		}
+	}
+	return newErrors
+}
+
+// CompareScreenshots compares two screenshots and returns similarity (0-1)
+// Uses simple pixel comparison with tolerance
+func CompareScreenshots(path1, path2 string) (float64, error) {
+	// Read both images
+	data1, err := os.ReadFile(path1)
+	if err != nil {
+		return 0, err
+	}
+	data2, err := os.ReadFile(path2)
+	if err != nil {
+		return 0, err
+	}
+	
+	img1, err := png.Decode(bytes.NewReader(data1))
+	if err != nil {
+		return 0, err
+	}
+	img2, err := png.Decode(bytes.NewReader(data2))
+	if err != nil {
+		return 0, err
+	}
+	
+	bounds1 := img1.Bounds()
+	bounds2 := img2.Bounds()
+	
+	// If sizes are very different, low similarity
+	if bounds1.Dx() != bounds2.Dx() || bounds1.Dy() != bounds2.Dy() {
+		return 0.5, nil // Different sizes, assume some similarity
+	}
+	
+	// Compare pixels with tolerance
+	totalPixels := bounds1.Dx() * bounds1.Dy()
+	matchingPixels := 0
+	
+	for y := bounds1.Min.Y; y < bounds1.Max.Y; y++ {
+		for x := bounds1.Min.X; x < bounds1.Max.X; x++ {
+			r1, g1, b1, _ := img1.At(x, y).RGBA()
+			r2, g2, b2, _ := img2.At(x, y).RGBA()
+			
+			// Allow some tolerance (shift by 8 to get 0-255 range)
+			tolerance := uint32(10 << 8)
+			if abs(r1, r2) < tolerance && abs(g1, g2) < tolerance && abs(b1, b2) < tolerance {
+				matchingPixels++
+			}
+		}
+	}
+	
+	return float64(matchingPixels) / float64(totalPixels), nil
+}
+
+func abs(a, b uint32) uint32 {
+	if a > b {
+		return a - b
+	}
+	return b - a
 }
