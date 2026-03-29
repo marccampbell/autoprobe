@@ -1,6 +1,7 @@
 package optimizer
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -513,10 +514,88 @@ Instructions:
 		task,
 	)
 	cmd.Dir = worktreePath
-	cmd.Stdout = os.Stdout
+
+	// Parse stream-json and print cleaner output
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
 	cmd.Stderr = os.Stderr
 
-	return cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer for large lines
+	
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		var event map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+
+		eventType, _ := event["type"].(string)
+		switch eventType {
+		case "assistant":
+			// Check for tool use
+			if msg, ok := event["message"].(map[string]interface{}); ok {
+				if content, ok := msg["content"].([]interface{}); ok {
+					for _, c := range content {
+						if item, ok := c.(map[string]interface{}); ok {
+							if item["type"] == "tool_use" {
+								name, _ := item["name"].(string)
+								if input, ok := item["input"].(map[string]interface{}); ok {
+									if desc, ok := input["description"].(string); ok {
+										fmt.Printf("\n  → %s: %s", name, desc)
+									} else if name == "Read" || name == "Grep" || name == "Glob" {
+										if path, ok := input["path"].(string); ok {
+											fmt.Printf("\n  → %s: %s", name, path)
+										} else if pattern, ok := input["pattern"].(string); ok {
+											fmt.Printf("\n  → %s: %s", name, pattern)
+										}
+									} else if name == "Edit" || name == "Write" {
+										if path, ok := input["file_path"].(string); ok {
+											fmt.Printf("\n  → %s: %s", name, path)
+										} else if path, ok := input["path"].(string); ok {
+											fmt.Printf("\n  → %s: %s", name, path)
+										}
+									} else if name == "Bash" {
+										if cmd, ok := input["command"].(string); ok {
+											if len(cmd) > 60 {
+												cmd = cmd[:60] + "..."
+											}
+											fmt.Printf("\n  → %s: %s", name, cmd)
+										}
+									} else {
+										fmt.Printf("\n  → %s", name)
+									}
+								} else {
+									fmt.Printf("\n  → %s", name)
+								}
+							}
+						}
+					}
+				}
+			}
+		case "system":
+			subtype, _ := event["subtype"].(string)
+			if subtype == "task_started" {
+				desc, _ := event["description"].(string)
+				if desc != "" {
+					fmt.Printf("\n  ⚡ Agent: %s", desc)
+				}
+			}
+		}
+	}
+	fmt.Println() // Final newline
+
+	return cmd.Wait()
 }
 
 func (o *PageOptimizer) commitWorktreeChanges(worktreePath string) (string, []string, error) {
