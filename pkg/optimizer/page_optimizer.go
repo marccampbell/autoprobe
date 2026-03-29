@@ -128,27 +128,34 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 			continue
 		}
 
-		// Check what changed
-		changedFiles, err := o.getChangedFiles(worktreePath)
+		// Commit changes in worktree
+		fmt.Print("Committing changes... ")
+		commitHash, changedFiles, err := o.commitWorktreeChanges(worktreePath)
 		if err != nil || len(changedFiles) == 0 {
-			fmt.Println("No changes made")
+			fmt.Println("no changes made")
 			o.cleanupWorktree(worktreePath, branchName)
-			
-			// If Claude made no changes, it probably means it's done
 			fmt.Println("No more optimizations identified.")
 			break
 		}
-
+		fmt.Printf("done (%d files)\n", len(changedFiles))
 		fmt.Printf("Changed: %s\n", strings.Join(changedFiles, ", "))
 
-		// Update page config to point to worktree
-		worktreePage := o.pageConfigForWorktree(worktreePath)
-
-		// Benchmark the worktree version
-		fmt.Print("Benchmarking (3 runs)... ")
-		afterStats, err := pagebench.RunMultiple(o.name, worktreePage, 3, false)
+		// Cherry-pick to main repo for benchmarking
+		fmt.Print("Cherry-picking to main... ")
+		err = o.cherryPick(commitHash)
 		if err != nil {
 			fmt.Printf("failed: %v\n", err)
+			o.cleanupWorktree(worktreePath, branchName)
+			continue
+		}
+		fmt.Println("done")
+
+		// Benchmark (now using the real dev server with cherry-picked changes)
+		fmt.Print("Benchmarking (3 runs)... ")
+		afterStats, err := pagebench.RunMultiple(o.name, o.page, 3, false)
+		if err != nil {
+			fmt.Printf("failed: %v\n", err)
+			o.revertCherryPick()
 			o.cleanupWorktree(worktreePath, branchName)
 			continue
 		}
@@ -157,20 +164,12 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 
 		if improved {
 			fmt.Printf("KEEP ✓ (%.0fms → %.0fms, %d → %d reqs)\n", beforeMs, afterMs, beforeCount, afterCount)
-			
-			// Merge changes back to main working tree
-			err = o.mergeChanges(worktreePath, changedFiles)
-			if err != nil {
-				fmt.Printf("Failed to merge: %v\n", err)
-			}
-			
+			// Changes are already in main, just leave them
 			o.state.CurrentStats = afterStats
 			o.state.Attempts = append(o.state.Attempts, PageAttempt{
 				FilesChanged: changedFiles,
 				Kept:         true,
 			})
-			
-			// Update prompt to mention what we already did
 			prompt = o.buildPromptWithHistory(slowRequests)
 		} else {
 			diff := afterMs - beforeMs
@@ -180,12 +179,13 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 			}
 			fmt.Printf("DISCARD ✗ (%.0fms → %.0fms, %s%.0fms, %d → %d reqs)\n", beforeMs, afterMs, sign, diff, beforeCount, afterCount)
 			
+			// Revert the cherry-pick
+			o.revertCherryPick()
+			
 			o.state.Attempts = append(o.state.Attempts, PageAttempt{
 				FilesChanged: changedFiles,
 				Kept:         false,
 			})
-			
-			// Update prompt to avoid repeating
 			prompt = o.buildPromptWithHistory(slowRequests)
 		}
 
@@ -256,12 +256,20 @@ func (o *PageOptimizer) runClaude(worktreePath, prompt string) error {
 	return err
 }
 
-func (o *PageOptimizer) getChangedFiles(worktreePath string) ([]string, error) {
-	cmd := exec.Command("git", "diff", "--name-only", "HEAD")
+func (o *PageOptimizer) commitWorktreeChanges(worktreePath string) (string, []string, error) {
+	// Stage all changes
+	cmd := exec.Command("git", "add", "-A")
+	cmd.Dir = worktreePath
+	if err := cmd.Run(); err != nil {
+		return "", nil, fmt.Errorf("git add failed: %w", err)
+	}
+
+	// Get list of staged files
+	cmd = exec.Command("git", "diff", "--cached", "--name-only")
 	cmd.Dir = worktreePath
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
 	var files []string
@@ -270,45 +278,44 @@ func (o *PageOptimizer) getChangedFiles(worktreePath string) ([]string, error) {
 			files = append(files, f)
 		}
 	}
-	return files, nil
+
+	if len(files) == 0 {
+		return "", nil, nil
+	}
+
+	// Commit
+	cmd = exec.Command("git", "commit", "-m", "autoprobe: optimization attempt")
+	cmd.Dir = worktreePath
+	if err := cmd.Run(); err != nil {
+		return "", nil, fmt.Errorf("git commit failed: %w", err)
+	}
+
+	// Get commit hash
+	cmd = exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = worktreePath
+	output, err = cmd.Output()
+	if err != nil {
+		return "", nil, err
+	}
+
+	return strings.TrimSpace(string(output)), files, nil
 }
 
-func (o *PageOptimizer) mergeChanges(worktreePath string, files []string) error {
-	// Copy changed files from worktree to main repo
-	for _, file := range files {
-		src := filepath.Join(worktreePath, file)
-		dst := filepath.Join(o.repoRoot, file)
-
-		content, err := os.ReadFile(src)
-		if err != nil {
-			return fmt.Errorf("failed to read %s: %w", src, err)
-		}
-
-		// Ensure directory exists
-		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-			return err
-		}
-
-		if err := os.WriteFile(dst, content, 0644); err != nil {
-			return fmt.Errorf("failed to write %s: %w", dst, err)
-		}
+func (o *PageOptimizer) cherryPick(commitHash string) error {
+	cmd := exec.Command("git", "cherry-pick", "--no-commit", commitHash)
+	cmd.Dir = o.repoRoot
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("cherry-pick failed: %w\n%s", err, output)
 	}
 	return nil
 }
 
-func (o *PageOptimizer) pageConfigForWorktree(worktreePath string) *config.PageConfig {
-	// Create a copy of the page config but with paths relative to worktree
-	// For now, assuming the page URL doesn't change (it's a localhost URL)
-	// The actual code changes are in the worktree, so the dev server needs to be
-	// pointing at the worktree... this is actually tricky.
-	
-	// TODO: For this to work properly, we'd need to either:
-	// 1. Run a separate dev server from the worktree
-	// 2. Or swap the main repo's files temporarily
-	// 3. Or have the dev server support hot-swapping roots
-	
-	// For now, return the same config - this is a limitation
-	return o.page
+func (o *PageOptimizer) revertCherryPick() {
+	// Reset staged changes and restore working tree
+	cmd := exec.Command("git", "reset", "--hard", "HEAD")
+	cmd.Dir = o.repoRoot
+	cmd.Run()
 }
 
 func (o *PageOptimizer) buildPrompt(slowRequests []pagebench.RequestInfo) string {
