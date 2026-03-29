@@ -14,7 +14,7 @@ import (
 )
 
 const apiURL = "https://api.groq.com/openai/v1/chat/completions"
-const defaultModel = "openai/gpt-oss-120b"
+const defaultModel = "qwen/qwen3-32b"
 const maxExplorationTurns = 15
 
 // Client is a Groq API client
