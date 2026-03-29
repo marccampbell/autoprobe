@@ -493,6 +493,24 @@ func (o *PageOptimizer) runClaudeCLI(worktreePath, hypothesis, change string) er
 		}
 	}
 
+	// Extract API paths from slow requests to constrain edits
+	var apiPaths []string
+	for _, req := range o.state.CurrentStats.Requests {
+		if req.ResourceType == "xhr" || req.ResourceType == "fetch" {
+			// Extract path from URL
+			if idx := strings.Index(req.URL, "://"); idx > 0 {
+				rest := req.URL[idx+3:]
+				if pathIdx := strings.Index(rest, "/"); pathIdx > 0 {
+					path := rest[pathIdx:]
+					if qIdx := strings.Index(path, "?"); qIdx > 0 {
+						path = path[:qIdx]
+					}
+					apiPaths = append(apiPaths, path)
+				}
+			}
+		}
+	}
+
 	// Build a specific task for Claude CLI
 	task := fmt.Sprintf(`Make this optimization:
 
@@ -500,11 +518,19 @@ HYPOTHESIS: %s
 
 CHANGE: %s
 
+CONSTRAINT: Only modify files that are part of the page route making these API calls:
+%s
+
+To find relevant files:
+1. First grep for the API paths above to find which files call them
+2. Only edit those files or their direct imports
+3. Do NOT edit unrelated components that happen to use similar patterns
+
 Instructions:
-1. Find the relevant code
-2. Make the necessary changes (may be multiple files)
+1. Find the relevant code by grepping for the API paths
+2. Make the necessary changes
 3. Focus on client-side .tsx/.jsx/.ts/.js files
-4. Exit when done`, hypothesis, change)
+4. Exit when done`, hypothesis, change, strings.Join(apiPaths, "\n"))
 
 	cmd := exec.Command(claudePath,
 		"--print",
