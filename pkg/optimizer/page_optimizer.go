@@ -135,6 +135,16 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 		fmt.Printf("\nHypothesis: %s\n", proposal.Hypothesis)
 		fmt.Printf("Change: %s\n", proposal.Change)
 		fmt.Printf("File: %s\n", proposal.File)
+		
+		// Show diff stats
+		oldLines := strings.Count(proposal.OldCode, "\n") + 1
+		newLines := strings.Count(proposal.NewCode, "\n") + 1
+		added := newLines - oldLines
+		if added >= 0 {
+			fmt.Printf("Diff: %d lines → %d lines (+%d)\n", oldLines, newLines, added)
+		} else {
+			fmt.Printf("Diff: %d lines → %d lines (%d)\n", oldLines, newLines, added)
+		}
 
 		if o.dryRun {
 			fmt.Println("\n[DRY RUN] Would apply:")
@@ -425,14 +435,14 @@ func (o *PageOptimizer) compareXHRTimings(before, after *pagebench.PageStats) (b
 	afterXHRCount := 0
 
 	for _, req := range before.Requests {
-		if req.ResourceType == "xhr" || req.ResourceType == "fetch" {
+		if (req.ResourceType == "xhr" || req.ResourceType == "fetch") && !pagebench.IsDevToolingURL(req.URL) {
 			beforeTotal += req.Duration
 			beforeXHRCount++
 		}
 	}
 
 	for _, req := range after.Requests {
-		if req.ResourceType == "xhr" || req.ResourceType == "fetch" {
+		if (req.ResourceType == "xhr" || req.ResourceType == "fetch") && !pagebench.IsDevToolingURL(req.URL) {
 			afterTotal += req.Duration
 			afterXHRCount++
 		}
