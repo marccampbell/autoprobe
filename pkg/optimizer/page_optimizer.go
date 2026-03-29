@@ -487,11 +487,49 @@ Instructions:
 	)
 	cmd.Dir = worktreePath
 	
-	// Always show Claude CLI output so user can see progress
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Stream output in real-time
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
 
-	return cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	// Stream stdout
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := stdout.Read(buf)
+			if n > 0 {
+				os.Stdout.Write(buf[:n])
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	// Stream stderr
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := stderr.Read(buf)
+			if n > 0 {
+				os.Stderr.Write(buf[:n])
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	return cmd.Wait()
 }
 
 func (o *PageOptimizer) commitWorktreeChanges(worktreePath string) (string, []string, error) {
