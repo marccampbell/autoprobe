@@ -288,17 +288,29 @@ func (o *PageOptimizer) gatherCodeContext(slowRequests []pagebench.RequestInfo) 
 }
 
 func (o *PageOptimizer) explore(codeContext string, slowRequests []pagebench.RequestInfo) (string, error) {
-	prompt := `You are a code explorer. Investigate the codebase to find optimization opportunities.
+	prompt := `You are a FRONTEND code explorer. Investigate CLIENT-SIDE code only.
 
-TASK: Find client-side code causing slow/redundant XHR requests.
+TASK: Find React/JavaScript code causing redundant or unnecessary XHR requests.
+
+FOCUS ON:
+1. Components making the same API call multiple times
+2. useEffect hooks with wrong/missing dependencies causing re-fetches
+3. Missing React Query/SWR caching (staleTime too short, etc)
+4. Sequential requests that could be parallelized
+5. Components re-rendering and triggering duplicate fetches
+
+DO NOT suggest:
+- Database changes
+- API/backend changes
+- Server-side caching
 
 WORKFLOW:
-1. Use grep to find where API calls are made
-2. Use read_file to examine components
-3. Identify issues (redundant calls, missing caching, bad useEffect deps)
-4. Summarize your findings
+1. grep for the API paths in .tsx/.jsx files
+2. read_file to examine the React components
+3. Look at useEffect, useQuery, useFetch patterns
+4. Identify CLIENT-SIDE issues only
 
-Be concise. Output findings, not narration.`
+Output: List specific files and code patterns that are problematic.`
 
 	var userPrompt strings.Builder
 	if len(o.state.Attempts) > 0 {
@@ -347,15 +359,26 @@ Be concise. Output findings, not narration.`
 }
 
 func (o *PageOptimizer) generateHypothesis(findings string, slowRequests []pagebench.RequestInfo) (string, string, error) {
-	prompt := `Based on the exploration findings, propose ONE optimization.
+	prompt := `Based on the exploration findings, propose ONE CLIENT-SIDE optimization.
+
+VALID optimizations (React/JavaScript changes):
+- Remove duplicate API calls in components
+- Fix useEffect dependencies to prevent re-fetches
+- Increase staleTime/cacheTime in React Query
+- Batch multiple small requests into one
+- Add request deduplication
+- Memoize components to prevent re-renders that trigger fetches
+
+INVALID (do not suggest):
+- Database indexes or queries
+- API/backend changes
+- Server-side caching
 
 Output JSON only:
-{"hypothesis": "what's wrong", "change": "what to change"}
+{"hypothesis": "what client-side issue causes the problem", "change": "what React/JS code to modify"}
 
-Or if no optimization found:
-{"done": true}
-
-Be specific about the issue and fix.`
+Or if no CLIENT-SIDE optimization found:
+{"done": true}`
 
 	context := fmt.Sprintf("## Exploration Findings\n%s\n\n## Slow Requests\n", findings)
 	for _, req := range slowRequests {
