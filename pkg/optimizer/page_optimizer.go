@@ -288,29 +288,26 @@ func (o *PageOptimizer) gatherCodeContext(slowRequests []pagebench.RequestInfo) 
 }
 
 func (o *PageOptimizer) explore(codeContext string, slowRequests []pagebench.RequestInfo) (string, error) {
-	prompt := `You are a FRONTEND code explorer. Investigate CLIENT-SIDE code only.
+	prompt := `You are a code explorer. Investigate the codebase to reduce XHR request overhead.
 
-TASK: Find React/JavaScript code causing redundant or unnecessary XHR requests.
-
-FOCUS ON:
+START WITH CLIENT-SIDE (check these first):
 1. Components making the same API call multiple times
 2. useEffect hooks with wrong/missing dependencies causing re-fetches
 3. Missing React Query/SWR caching (staleTime too short, etc)
 4. Sequential requests that could be parallelized
 5. Components re-rendering and triggering duplicate fetches
 
-DO NOT suggest:
-- Database changes
-- API/backend changes
-- Server-side caching
+THEN IF NEEDED (API changes):
+6. Multiple API calls that could be combined into one endpoint
+7. API responses returning too much data
 
 WORKFLOW:
 1. grep for the API paths in .tsx/.jsx files
 2. read_file to examine the React components
 3. Look at useEffect, useQuery, useFetch patterns
-4. Identify CLIENT-SIDE issues only
+4. If client-side looks fine, check API handlers
 
-Output: List specific files and code patterns that are problematic.`
+Output: List specific files and code patterns that are problematic. Prioritize client-side issues.`
 
 	var userPrompt strings.Builder
 	if len(o.state.Attempts) > 0 {
@@ -359,25 +356,26 @@ Output: List specific files and code patterns that are problematic.`
 }
 
 func (o *PageOptimizer) generateHypothesis(findings string, slowRequests []pagebench.RequestInfo) (string, string, error) {
-	prompt := `Based on the exploration findings, propose ONE CLIENT-SIDE optimization.
+	prompt := `Based on the exploration findings, propose ONE optimization.
 
-VALID optimizations (React/JavaScript changes):
+PRIORITIZE CLIENT-SIDE (try these first):
 - Remove duplicate API calls in components
 - Fix useEffect dependencies to prevent re-fetches
 - Increase staleTime/cacheTime in React Query
-- Batch multiple small requests into one
-- Add request deduplication
-- Memoize components to prevent re-renders that trigger fetches
+- Batch requests or add deduplication
+- Memoize components to prevent re-render fetches
 
-INVALID (do not suggest):
-- Database indexes or queries
-- API/backend changes
-- Server-side caching
+IF CLIENT-SIDE IS ALREADY GOOD, then consider:
+- Combining multiple API endpoints into one
+- Reducing API response payload size
+
+DO NOT suggest:
+- Database indexes or query changes
 
 Output JSON only:
-{"hypothesis": "what client-side issue causes the problem", "change": "what React/JS code to modify"}
+{"hypothesis": "what causes the problem", "change": "what code to modify"}
 
-Or if no CLIENT-SIDE optimization found:
+Or if no optimization found:
 {"done": true}`
 
 	context := fmt.Sprintf("## Exploration Findings\n%s\n\n## Slow Requests\n", findings)
