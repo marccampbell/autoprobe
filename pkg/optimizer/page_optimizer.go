@@ -237,6 +237,7 @@ func (o *PageOptimizer) runClaude(worktreePath, prompt string) error {
 	// Look for claude in common locations
 	claudePath := "claude"
 	for _, path := range []string{
+		os.Getenv("HOME") + "/.claude/local/claude",
 		"/usr/local/bin/claude",
 		"/opt/homebrew/bin/claude",
 		os.Getenv("HOME") + "/.npm-global/bin/claude",
