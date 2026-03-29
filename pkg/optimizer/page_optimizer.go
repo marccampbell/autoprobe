@@ -487,10 +487,9 @@ Instructions:
 	)
 	cmd.Dir = worktreePath
 	
-	if o.verbose {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
+	// Always show Claude CLI output so user can see progress
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
 	return cmd.Run()
 }
