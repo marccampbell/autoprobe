@@ -417,10 +417,7 @@ func PrintStats(stats *PageStats) {
 		})
 		fmt.Printf("\nXHR/Fetch Requests (%d):\n", len(xhrRequests))
 		for _, req := range xhrRequests {
-			displayURL := req.URL
-			if len(displayURL) > 55 {
-				displayURL = displayURL[:52] + "..."
-			}
+			displayURL := truncateURLMiddle(req.URL, 60)
 			status := fmt.Sprintf("%d", req.Status)
 			fmt.Printf("  %3s %6s  %s\n", status, req.Duration.Round(time.Millisecond), displayURL)
 		}
@@ -436,10 +433,7 @@ func PrintStats(stats *PageStats) {
 	if len(redundant) > 0 {
 		fmt.Printf("\n🔴 Redundant XHR (identical responses, wasted requests):\n")
 		for _, dup := range redundant {
-			displayURL := dup.URL
-			if len(displayURL) > 55 {
-				displayURL = displayURL[:52] + "..."
-			}
+			displayURL := truncateURLMiddle(dup.URL, 55)
 			status := "identical"
 			if !dup.Identical {
 				status = "may vary"
@@ -463,11 +457,7 @@ func PrintStats(stats *PageStats) {
 		fmt.Printf("\n⚠ Other Duplicate Requests:\n")
 		for _, url := range otherDuplicates {
 			count := stats.Duplicates[url]
-			displayURL := url
-			if len(displayURL) > 60 {
-				displayURL = displayURL[:57] + "..."
-			}
-			fmt.Printf("  %dx %s\n", count, displayURL)
+			fmt.Printf("  %dx %s\n", count, truncateURLMiddle(url, 60))
 		}
 	}
 	
@@ -545,4 +535,44 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// truncateURLMiddle keeps the start and end, truncates the middle
+// For http://vendor-api.localhost:8000/v3/app/380BNB1ocintPMudu.../channels
+// Shows: http://vendor-api...8000/v3/app/.../channels
+func truncateURLMiddle(url string, maxLen int) string {
+	if len(url) <= maxLen {
+		return url
+	}
+	
+	// Find where path starts
+	pathStart := strings.Index(url, "://")
+	if pathStart != -1 {
+		pathStart = strings.Index(url[pathStart+3:], "/")
+		if pathStart != -1 {
+			pathStart += len(url[:strings.Index(url, "://")+3])
+		}
+	}
+	
+	// Keep first ~20 chars and last ~35 chars of path
+	keepStart := 25
+	keepEnd := maxLen - keepStart - 3 // 3 for "..."
+	if keepEnd < 20 {
+		keepEnd = 20
+	}
+	
+	if pathStart > 0 && pathStart < len(url) {
+		// Truncate domain if needed, keep more of path
+		path := url[pathStart:]
+		if len(path) <= keepEnd+10 {
+			// Path is short, truncate domain instead
+			domain := url[:pathStart]
+			if len(domain) > keepStart {
+				domain = domain[:15] + "..." + domain[len(domain)-10:]
+			}
+			return domain + path
+		}
+	}
+	
+	return url[:keepStart] + "..." + url[len(url)-keepEnd:]
 }
