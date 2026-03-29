@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -38,12 +37,11 @@ type PageRunState struct {
 
 // PageAttempt records a single optimization attempt
 type PageAttempt struct {
-	Hypothesis      string
-	Change          string
-	File            string
-	Diff            string
-	Kept            bool
-	ModifiedFiles   map[string]string // file path -> original content (for revert)
+	Hypothesis string
+	Change     string
+	File       string
+	Diff       string
+	Kept       bool
 }
 
 // NewPageOptimizer creates a new page optimizer
@@ -154,12 +152,9 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 			continue
 		}
 
-		// Snapshot current git state before applying
-		dirtyFiles := o.getDirtyFiles()
-
-		// Apply the change
+		// Apply the change (returns original content for revert)
 		fmt.Print("Applying... ")
-		_, err = o.applyChange(proposal)
+		originalContent, err := o.applyChange(proposal)
 		if err != nil {
 			fmt.Printf("failed: %v\n", err)
 			o.state.Iteration--
@@ -172,7 +167,7 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 		afterStats, err := pagebench.RunMultiple(o.name, o.page, 3, false)
 		if err != nil {
 			fmt.Printf("failed: %v\n", err)
-			o.revertAllChanges(dirtyFiles)
+			o.revertChange(proposal.File, originalContent)
 			continue
 		}
 
@@ -195,7 +190,7 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 				sign = ""
 			}
 			fmt.Printf("DISCARD ✗ (%.0fms → %.0fms, %s%.0fms, %d → %d reqs)\n", beforeMs, afterMs, sign, diff, beforeCount, afterCount)
-			o.revertAllChanges(dirtyFiles)
+			o.revertChange(proposal.File, originalContent)
 			o.state.Attempts = append(o.state.Attempts, PageAttempt{
 				Hypothesis: proposal.Hypothesis,
 				Change:     proposal.Change,
@@ -431,57 +426,6 @@ func (o *PageOptimizer) applyChange(proposal *Proposal) (string, error) {
 
 func (o *PageOptimizer) revertChange(file, originalContent string) {
 	os.WriteFile(file, []byte(originalContent), 0644)
-}
-
-// getDirtyFiles returns a map of currently modified files -> their original content
-func (o *PageOptimizer) getDirtyFiles() map[string]string {
-	result := make(map[string]string)
-	
-	// Get list of modified files from git
-	cmd := exec.Command("git", "diff", "--name-only")
-	output, err := cmd.Output()
-	if err != nil {
-		return result
-	}
-	
-	files := strings.Split(strings.TrimSpace(string(output)), "\n")
-	for _, file := range files {
-		if file == "" {
-			continue
-		}
-		// Save current content
-		content, err := os.ReadFile(file)
-		if err == nil {
-			result[file] = string(content)
-		}
-	}
-	
-	return result
-}
-
-// revertAllChanges reverts all files that weren't dirty before
-func (o *PageOptimizer) revertAllChanges(beforeDirty map[string]string) {
-	// Get current dirty files
-	cmd := exec.Command("git", "diff", "--name-only")
-	output, err := cmd.Output()
-	if err != nil {
-		return
-	}
-	
-	files := strings.Split(strings.TrimSpace(string(output)), "\n")
-	for _, file := range files {
-		if file == "" {
-			continue
-		}
-		
-		if _, wasDirty := beforeDirty[file]; !wasDirty {
-			// This file was clean before, revert it
-			exec.Command("git", "checkout", file).Run()
-		} else {
-			// File was already dirty, restore to its pre-apply state
-			os.WriteFile(file, []byte(beforeDirty[file]), 0644)
-		}
-	}
 }
 
 func (o *PageOptimizer) compareXHRTimings(before, after *pagebench.PageStats) (bool, float64, float64, int, int) {
