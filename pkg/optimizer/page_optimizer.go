@@ -471,6 +471,7 @@ Instructions:
 
 	cmd := exec.Command(claudePath,
 		"--print",
+		"--verbose",
 		"--output-format", "stream-json",
 		"--dangerously-skip-permissions",
 		task,
