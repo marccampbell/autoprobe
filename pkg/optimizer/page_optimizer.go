@@ -70,14 +70,14 @@ func NewPageOptimizer(cfg *config.Config, pageName string, page *config.PageConf
 		return nil, err
 	}
 
-	// Fast client for exploration (Groq preferred, Fireworks fallback)
+	// Fast client for exploration (Fireworks preferred - better tool calling than Groq/GPT-OSS)
 	var fastClient FastClient
-	if groqClient, err := groq.NewClient(); err == nil {
-		fastClient = groqClient
-	} else if fwClient, err := fireworks.NewClient(); err == nil {
+	if fwClient, err := fireworks.NewClient(); err == nil {
 		fastClient = fwClient
+	} else if groqClient, err := groq.NewClient(); err == nil {
+		fastClient = groqClient
 	} else {
-		return nil, fmt.Errorf("page optimization requires GROQ_API_KEY or FIREWORKS_API_KEY for fast exploration")
+		return nil, fmt.Errorf("page optimization requires FIREWORKS_API_KEY or GROQ_API_KEY for fast exploration")
 	}
 
 	return &PageOptimizer{
@@ -302,31 +302,28 @@ func (o *PageOptimizer) gatherCodeContext(slowRequests []pagebench.RequestInfo) 
 }
 
 func (o *PageOptimizer) explore(codeContext string, slowRequests []pagebench.RequestInfo) (string, error) {
-	prompt := `You are a code explorer. Investigate the codebase to reduce XHR request overhead.
+	prompt := `You are a code explorer.
 
-AVAILABLE TOOLS (use only these exact names):
-- read_file: Read a file. Args: {"path": "path/to/file"}
-- list_files: List directory contents. Args: {"path": "directory/path"}
-- grep: Search for pattern in files. Args: {"pattern": "search text", "include": "*.tsx,*.ts"}
-- glob: Find files by pattern. Args: {"pattern": "**/*.tsx"}
+TOOLS YOU CAN USE (these are the ONLY tools available):
+1. grep - search files: {"pattern": "search text", "include": "*.tsx"}
+2. read_file - read a file: {"path": "path/to/file.tsx"}  
+3. list_files - list directory: {"path": "src/components"}
+4. glob - find files: {"pattern": "**/*.tsx"}
 
-START WITH CLIENT-SIDE (check these first):
-1. Components making the same API call multiple times
-2. useEffect hooks with wrong/missing dependencies causing re-fetches
-3. Missing React Query/SWR caching (staleTime too short, etc)
-4. Sequential requests that could be parallelized
-5. Components re-rendering and triggering duplicate fetches
+DO NOT use any other tools. DO NOT use repo_browser, print_tree, or any tool not listed above.
 
-THEN IF NEEDED (API changes):
-6. Multiple API calls that could be combined into one endpoint
-7. API responses returning too much data
+TASK: Find client-side code causing redundant XHR requests.
 
-WORKFLOW:
-1. Use grep to find API paths in .tsx/.jsx files
-2. Use read_file to examine React components
-3. Look at useEffect, useQuery, useFetch patterns
+Look for:
+- Same API called multiple times
+- useEffect with bad dependencies
+- Missing caching (short staleTime)
+- Components re-rendering and fetching
 
-Output: List specific files and code patterns that are problematic.`
+STEPS:
+1. grep for API paths in .tsx files
+2. read_file to look at the components
+3. Summarize what you find`
 
 	var userPrompt strings.Builder
 	if len(o.state.Attempts) > 0 {
