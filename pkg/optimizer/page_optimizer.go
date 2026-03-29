@@ -216,6 +216,20 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 
 		if improved {
 			fmt.Printf("KEEP ✓ (%.0fms → %.0fms, %d → %d reqs)\n", beforeMs, afterMs, beforeCount, afterCount)
+			
+			// Auto-commit the changes
+			commitMsg := fmt.Sprintf("perf: %s", hypothesis)
+			if len(commitMsg) > 72 {
+				commitMsg = commitMsg[:69] + "..."
+			}
+			fmt.Print("Committing... ")
+			commitHash, err := o.commitChanges(commitMsg)
+			if err != nil {
+				fmt.Printf("failed: %v\n", err)
+			} else {
+				fmt.Printf("done (%s)\n", commitHash[:7])
+			}
+			
 			o.state.CurrentStats = afterStats
 			o.state.Attempts = append(o.state.Attempts, PageAttempt{
 				Hypothesis:   hypothesis,
@@ -539,6 +553,32 @@ func (o *PageOptimizer) revertCherryPick() {
 	cmd := exec.Command("git", "reset", "--hard", "HEAD")
 	cmd.Dir = o.repoRoot
 	cmd.Run()
+}
+
+func (o *PageOptimizer) commitChanges(message string) (string, error) {
+	// Stage all changes
+	cmd := exec.Command("git", "add", "-A")
+	cmd.Dir = o.repoRoot
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+
+	// Commit
+	cmd = exec.Command("git", "commit", "-m", message)
+	cmd.Dir = o.repoRoot
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+
+	// Get commit hash
+	cmd = exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = o.repoRoot
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(string(output)), nil
 }
 
 func (o *PageOptimizer) getSlowestXHR(stats *pagebench.PageStats, n int) []pagebench.RequestInfo {
