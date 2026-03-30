@@ -503,40 +503,45 @@ func extractPagePath(url string) string {
 func (o *PageOptimizer) explore(codeContext string, slowRequests []pagebench.RequestInfo) (string, error) {
 	pagePath := extractPagePath(o.page.URL)
 	
-	prompt := fmt.Sprintf(`You are a code explorer finding performance issues. You MUST use tools to investigate.
+	prompt := fmt.Sprintf(`You are a code explorer finding performance issues. Use tools to investigate.
 
-AVAILABLE TOOLS:
+TOOLS:
 - grep: {"pattern": "text", "include": "*.tsx"}  
 - read_file: {"path": "file.tsx"}
 - list_files: {"path": "directory"}
 
 TARGET PAGE: %s
 
-YOUR TASK - FOLLOW THESE STEPS IN ORDER:
+INVESTIGATION STRATEGY:
 
-1. TRACE THE ROUTE: Find the router config and identify which component renders for this URL path
-2. READ THE PAGE COMPONENT: Read the main component file for this page
-3. TRACE CHILD COMPONENTS: Identify what child components the page imports and renders
-4. FIND API CALLS: For each component in the render tree, find useQuery/fetch/axios calls
-5. IDENTIFY THE PROBLEM: Only flag duplicate/redundant calls if they're in components ACTUALLY RENDERED on this page
+1. FIND WHERE THE DUPLICATE API CALLS ARE MADE
+   - Look at the RedundantXHR list below - those APIs are being called multiple times
+   - Grep for those API paths to find which files call them
+   - Read those files to understand WHY they're called multiple times
 
-CRITICAL: Do NOT assume a component causes issues just because it calls the same API. 
-You must VERIFY the component is actually imported and rendered by the page component tree.
+2. CHECK FOR SHARED HOOKS OR UTILITIES
+   - Look for useQuery hooks, custom hooks, or API utilities
+   - These are often the source of duplicate calls (multiple components using same hook)
+   - Check if staleTime/cacheTime is configured
 
-When you find the issue, output a summary like:
-COMPONENT TREE: PageComponent -> ChildA -> ChildB
-API CALLS FOUND:
-- ChildA calls /api/foo (line 23)
-- ChildB also calls /api/foo (line 45) <- DUPLICATE
-PROBLEM: Both components fetch the same data independently
+3. TRY TO TRACE THE PAGE (best effort)
+   - Look for route config mentioning "%s" 
+   - If you find the page component, see what it imports
+   - But don't give up if you can't trace perfectly
 
-START by finding the route configuration for path "%s".`, pagePath, pagePath)
+OUTPUT a summary of what you found:
+- Which files make the duplicate API calls
+- Whether they use shared hooks or direct calls  
+- Any missing cache configuration you noticed
+- Your best guess at why duplicates occur
+
+Even partial findings are useful. Focus on the RedundantXHR endpoints.`, pagePath, pagePath)
 
 	var userPrompt strings.Builder
 	
 	// Always start with the target page URL
 	userPrompt.WriteString(fmt.Sprintf("## TARGET PAGE\nURL: %s\nPath: %s\n\n", o.page.URL, pagePath))
-	userPrompt.WriteString("You MUST verify components are rendered on THIS page before flagging them as problems.\n\n")
+	userPrompt.WriteString("Focus on finding WHERE the duplicate API calls originate. Check shared hooks and utilities.\n\n")
 	
 	if len(o.state.Attempts) > 0 {
 		userPrompt.WriteString("## Previous Attempts (find something DIFFERENT)\n")
@@ -611,40 +616,39 @@ func (o *PageOptimizer) generateHypothesis(findings string, slowRequests []pageb
 	
 	prompt := fmt.Sprintf(`Based on the exploration findings, propose ONE optimization for the page at path "%s".
 
-CRITICAL VALIDATION REQUIREMENTS:
-Before proposing any change, you MUST have verified:
-1. The component you want to modify is ACTUALLY RENDERED on this specific page
-2. You traced the import chain from the page component to the target component
-3. The API call you want to optimize is triggered when loading THIS page
+APPROACH:
+1. If you found components that are DEFINITELY on this page (traced imports), optimize those first
+2. If you found shared hooks/utilities that make API calls, those are safe to optimize
+3. If the duplicate calls come from a query.tsx or similar shared file, optimize caching there
+4. Even if you're not 100%% certain, propose optimizations that are LOW RISK:
+   - Adding staleTime/cacheTime to React Query hooks (safe, won't break anything)
+   - Deduplicating in shared API utilities (affects all pages, generally safe)
+   - Memoizing expensive computations
 
-DO NOT propose changes to components that:
-- Are not imported by the page component tree
-- Only appear in grep results but aren't actually used on this page
-- Are used on OTHER pages but not this one
+AVOID HIGH RISK changes when uncertain:
+- Removing API calls entirely
+- Changing component render logic
+- Modifying data flow between components
 
-LOOK FOR THESE PROBLEMS (in priority order):
-1. DUPLICATE REQUESTS: Same API called multiple times BY COMPONENTS ON THIS PAGE
-2. TOO MANY REQUESTS: This page makes many separate API calls that could be batched
-3. UNNECESSARY REQUESTS: Data fetched but not used on this page
-4. RE-FETCH ON RENDER: useEffect deps causing refetches on this page
+LOOK FOR THESE PROBLEMS (priority order):
+1. DUPLICATE REQUESTS: Same API called 2+ times (see RedundantXHR list)
+2. MISSING CACHE CONFIG: useQuery without staleTime causes refetches
+3. TOO MANY REQUESTS: Multiple calls that could be batched
+4. RE-FETCH ON RENDER: useEffect deps or missing memoization
 
-PRIORITIZE CLIENT-SIDE FIXES:
-- Remove duplicate API calls in components rendered on this page
-- Batch multiple related requests into one
-- Fix useEffect dependencies to prevent re-fetches
-- Increase staleTime/cacheTime in React Query
-- Memoize components to prevent re-render fetches
+ALWAYS TRY SOMETHING. Even if the exploration didn't find the exact cause, 
+look at the redundant XHR list and find WHERE those API calls are made.
 
-Output JSON only:
+Output JSON:
 {
   "hypothesis": "what causes the problem",
-  "change": "what code to modify", 
-  "verified_components": ["list of components you verified are on this page"],
-  "evidence": "how you verified these components render on this page"
+  "change": "what code to modify",
+  "confidence": "high/medium/low",
+  "risk": "safe/moderate/risky"
 }
 
-Or if no optimization found or cannot verify component is on this page:
-{"done": true, "reason": "why no optimization is possible"}`, pagePath)
+Only return done if you've exhausted all options:
+{"done": true, "reason": "specific reason"}`, pagePath)
 
 	var context strings.Builder
 	
