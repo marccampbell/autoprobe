@@ -193,124 +193,194 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 		}
 		fmt.Printf("Changed: %s\n", strings.Join(changedFiles, ", "))
 
-		// Cherry-pick to main repo for benchmarking
-		fmt.Print("Cherry-picking to main... ")
-		err = o.cherryPick(commitHash)
-		if err != nil {
-			fmt.Printf("failed: %v\n", err)
-			o.cleanupWorktree(worktreePath, branchName)
-			continue
-		}
-		fmt.Println("done")
+		// Benchmark and validation loop with fix retries
+		const maxFixAttempts = 3
+		var finalStats *pagebench.PageStats
+		var finalCommitHash string
+		var allChangedFiles []string
+		kept := false
+		discardReason := ""
 
-		// Benchmark
-		fmt.Print("Benchmarking (3 runs)... ")
-		afterStats, err := pagebench.RunMultiple(o.name, o.page, 3, false)
-		if err != nil {
-			fmt.Printf("failed: %v\n", err)
-			o.revertCherryPick()
-			o.cleanupWorktree(worktreePath, branchName)
-			continue
-		}
-
-		improved, beforeMs, afterMs, beforeCount, afterCount := o.compareXHRTimings(o.state.CurrentStats, afterStats)
-
-		// Check for new console errors (regression)
-		newErrors := pagebench.FindNewConsoleErrors(o.state.CurrentStats, afterStats)
-		if len(newErrors) > 0 {
-			fmt.Printf("DISCARD ✗ — new console errors:\n")
-			for _, e := range newErrors {
-				if len(e) > 100 {
-					e = e[:100] + "..."
-				}
-				fmt.Printf("  • %s\n", e)
+		for fixAttempt := 0; fixAttempt <= maxFixAttempts; fixAttempt++ {
+			// Cherry-pick to main repo for benchmarking
+			if fixAttempt == 0 {
+				fmt.Print("Cherry-picking to main... ")
 			}
-			// Log baseline errors for debugging
-			if len(o.state.CurrentStats.ConsoleErrors) > 0 {
-				fmt.Printf("\n  [DEBUG] Baseline had %d console errors:\n", len(o.state.CurrentStats.ConsoleErrors))
-				for _, e := range o.state.CurrentStats.ConsoleErrors {
+			err = o.cherryPick(commitHash)
+			if err != nil {
+				fmt.Printf("failed: %v\n", err)
+				break
+			}
+			if fixAttempt == 0 {
+				fmt.Println("done")
+			}
+
+			// Benchmark
+			fmt.Print("Benchmarking (3 runs)... ")
+			afterStats, err := pagebench.RunMultiple(o.name, o.page, 3, false)
+			if err != nil {
+				fmt.Printf("failed: %v\n", err)
+				o.revertCherryPick()
+				break
+			}
+
+			// Check for new console errors (regression)
+			newErrors := pagebench.FindNewConsoleErrors(o.state.CurrentStats, afterStats)
+			if len(newErrors) > 0 {
+				fmt.Printf("new console errors detected:\n")
+				for _, e := range newErrors {
 					if len(e) > 100 {
 						e = e[:100] + "..."
 					}
-					fmt.Printf("    • %s\n", e)
+					fmt.Printf("  • %s\n", e)
 				}
-			}
-			// Save for replay
-			o.saveDiscardedAttempt(commitHash, hypothesis, change, changedFiles, 
-				fmt.Sprintf("new console errors (%d)", len(newErrors)),
-				o.state.CurrentStats.ScreenshotPath, afterStats.ScreenshotPath, newErrors)
-			o.revertCherryPick()
-			o.cleanupWorktree(worktreePath, branchName)
-			o.state.Attempts = append(o.state.Attempts, PageAttempt{
-				Hypothesis:   hypothesis,
-				Change:       change,
-				FilesChanged: changedFiles,
-				Kept:         false,
-			})
-			continue
-		}
 
-		// Check visual regression
-		similarity, err := pagebench.CompareScreenshots(o.state.CurrentStats.ScreenshotPath, afterStats.ScreenshotPath)
-		if err == nil && similarity < 0.85 {
-			fmt.Printf("DISCARD ✗ — visual regression (%.0f%% similar, need 85%%+)\n", similarity*100)
-			// Save for replay
-			o.saveDiscardedAttempt(commitHash, hypothesis, change, changedFiles,
-				fmt.Sprintf("visual regression (%.0f%% similar)", similarity*100),
-				o.state.CurrentStats.ScreenshotPath, afterStats.ScreenshotPath, nil)
-			o.revertCherryPick()
-			o.cleanupWorktree(worktreePath, branchName)
-			o.state.Attempts = append(o.state.Attempts, PageAttempt{
-				Hypothesis:   hypothesis,
-				Change:       change,
-				FilesChanged: changedFiles,
-				Kept:         false,
-			})
-			continue
-		}
+				// Try to fix if we have attempts left
+				if fixAttempt < maxFixAttempts {
+					fmt.Printf("\nAttempting fix (%d/%d)...\n", fixAttempt+1, maxFixAttempts)
+					o.revertCherryPick()
 
-		if improved {
-			fmt.Printf("KEEP ✓ (%.0fms → %.0fms, %d → %d reqs)\n", beforeMs, afterMs, beforeCount, afterCount)
-			
-			// Auto-commit the changes
-			commitMsg := fmt.Sprintf("perf: %s", hypothesis)
-			if len(commitMsg) > 72 {
-				commitMsg = commitMsg[:69] + "..."
+					// Run Claude CLI to fix the errors
+					fixTask := fmt.Sprintf("Fix these console errors that were introduced:\n\n%s\n\nThe original change was: %s\n\nFix the errors while keeping the performance optimization.", strings.Join(newErrors, "\n"), change)
+					err = o.runClaudeCLI(worktreePath, "fix console errors", fixTask)
+					if err != nil {
+						fmt.Printf("  Fix attempt failed: %v\n", err)
+						discardReason = fmt.Sprintf("new console errors (%d), fix failed", len(newErrors))
+						finalStats = afterStats
+						break
+					}
+
+					// Commit the fix
+					newCommitHash, newChangedFiles, err := o.commitWorktreeChanges(worktreePath)
+					if err != nil || len(newChangedFiles) == 0 {
+						fmt.Println("  No fix changes made")
+						discardReason = fmt.Sprintf("new console errors (%d), no fix made", len(newErrors))
+						finalStats = afterStats
+						break
+					}
+					fmt.Printf("  Fixed: %s\n", strings.Join(newChangedFiles, ", "))
+
+					commitHash = newCommitHash
+					allChangedFiles = append(allChangedFiles, newChangedFiles...)
+					continue // Re-benchmark with the fix
+				}
+
+				// Out of fix attempts
+				discardReason = fmt.Sprintf("new console errors (%d)", len(newErrors))
+				finalStats = afterStats
+				o.revertCherryPick()
+				break
 			}
-			fmt.Print("Committing... ")
-			commitHash, err := o.commitChanges(commitMsg)
-			if err != nil {
-				fmt.Printf("failed: %v\n", err)
+
+			// Check visual regression
+			similarity, err := pagebench.CompareScreenshots(o.state.CurrentStats.ScreenshotPath, afterStats.ScreenshotPath)
+			if err == nil && similarity < 0.85 {
+				fmt.Printf("visual regression (%.0f%% similar, need 85%%+)\n", similarity*100)
+
+				// Try to fix if we have attempts left
+				if fixAttempt < maxFixAttempts {
+					fmt.Printf("\nAttempting fix (%d/%d)...\n", fixAttempt+1, maxFixAttempts)
+					o.revertCherryPick()
+
+					// Run Claude CLI to fix the visual regression
+					fixTask := fmt.Sprintf("The optimization caused a visual regression - the page looks different. The original change was: %s\n\nFix the visual regression while keeping the performance optimization. Make sure the UI looks the same as before.", change)
+					err = o.runClaudeCLI(worktreePath, "fix visual regression", fixTask)
+					if err != nil {
+						fmt.Printf("  Fix attempt failed: %v\n", err)
+						discardReason = fmt.Sprintf("visual regression (%.0f%% similar), fix failed", similarity*100)
+						finalStats = afterStats
+						break
+					}
+
+					// Commit the fix
+					newCommitHash, newChangedFiles, err := o.commitWorktreeChanges(worktreePath)
+					if err != nil || len(newChangedFiles) == 0 {
+						fmt.Println("  No fix changes made")
+						discardReason = fmt.Sprintf("visual regression (%.0f%% similar), no fix made", similarity*100)
+						finalStats = afterStats
+						break
+					}
+					fmt.Printf("  Fixed: %s\n", strings.Join(newChangedFiles, ", "))
+
+					commitHash = newCommitHash
+					allChangedFiles = append(allChangedFiles, newChangedFiles...)
+					continue // Re-benchmark with the fix
+				}
+
+				// Out of fix attempts
+				discardReason = fmt.Sprintf("visual regression (%.0f%% similar)", similarity*100)
+				finalStats = afterStats
+				o.revertCherryPick()
+				break
+			}
+
+			// No errors! Check if it improved
+			improved, beforeMs, afterMs, beforeCount, afterCount := o.compareXHRTimings(o.state.CurrentStats, afterStats)
+
+			if improved {
+				fmt.Printf("KEEP ✓ (%.0fms → %.0fms, %d → %d reqs)\n", beforeMs, afterMs, beforeCount, afterCount)
+
+				// Auto-commit the changes
+				commitMsg := fmt.Sprintf("perf: %s", hypothesis)
+				if len(commitMsg) > 72 {
+					commitMsg = commitMsg[:69] + "..."
+				}
+				fmt.Print("Committing... ")
+				finalCommit, err := o.commitChanges(commitMsg)
+				if err != nil {
+					fmt.Printf("failed: %v\n", err)
+				} else {
+					fmt.Printf("done (%s)\n", finalCommit[:7])
+				}
+
+				finalStats = afterStats
+				finalCommitHash = finalCommit
+				allChangedFiles = append(allChangedFiles, changedFiles...)
+				kept = true
+				break
 			} else {
-				fmt.Printf("done (%s)\n", commitHash[:7])
+				diff := afterMs - beforeMs
+				sign := "+"
+				if diff < 0 {
+					sign = ""
+				}
+				fmt.Printf("DISCARD ✗ (%.0fms → %.0fms, %s%.0fms, %d → %d reqs)\n", beforeMs, afterMs, sign, diff, beforeCount, afterCount)
+				discardReason = fmt.Sprintf("no improvement (%.0fms → %.0fms)", beforeMs, afterMs)
+				finalStats = afterStats
+				o.revertCherryPick()
+				break
 			}
-			
-			o.state.CurrentStats = afterStats
+		}
+
+		// Record the attempt
+		if allChangedFiles == nil {
+			allChangedFiles = changedFiles
+		}
+
+		if kept {
+			o.state.CurrentStats = finalStats
 			o.state.Attempts = append(o.state.Attempts, PageAttempt{
 				Hypothesis:   hypothesis,
 				Change:       change,
-				FilesChanged: changedFiles,
+				FilesChanged: allChangedFiles,
 				Kept:         true,
 			})
 		} else {
-			diff := afterMs - beforeMs
-			sign := "+"
-			if diff < 0 {
-				sign = ""
-			}
-			fmt.Printf("DISCARD ✗ (%.0fms → %.0fms, %s%.0fms, %d → %d reqs)\n", beforeMs, afterMs, sign, diff, beforeCount, afterCount)
 			// Save for replay
-			o.saveDiscardedAttempt(commitHash, hypothesis, change, changedFiles,
-				fmt.Sprintf("no improvement (%.0fms → %.0fms)", beforeMs, afterMs),
-				o.state.CurrentStats.ScreenshotPath, afterStats.ScreenshotPath, nil)
-			o.revertCherryPick()
+			if finalStats != nil {
+				o.saveDiscardedAttempt(commitHash, hypothesis, change, allChangedFiles,
+					discardReason, o.state.CurrentStats.ScreenshotPath, finalStats.ScreenshotPath, nil)
+			}
 			o.state.Attempts = append(o.state.Attempts, PageAttempt{
 				Hypothesis:   hypothesis,
 				Change:       change,
-				FilesChanged: changedFiles,
+				FilesChanged: allChangedFiles,
 				Kept:         false,
 			})
 		}
+
+		// Use finalCommitHash if available for any cleanup
+		_ = finalCommitHash
 
 		o.cleanupWorktree(worktreePath, branchName)
 	}
