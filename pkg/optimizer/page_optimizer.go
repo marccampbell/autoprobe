@@ -225,6 +225,16 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 				}
 				fmt.Printf("  • %s\n", e)
 			}
+			// Log baseline errors for debugging
+			if len(o.state.CurrentStats.ConsoleErrors) > 0 {
+				fmt.Printf("\n  [DEBUG] Baseline had %d console errors:\n", len(o.state.CurrentStats.ConsoleErrors))
+				for _, e := range o.state.CurrentStats.ConsoleErrors {
+					if len(e) > 100 {
+						e = e[:100] + "..."
+					}
+					fmt.Printf("    • %s\n", e)
+				}
+			}
 			o.revertCherryPick()
 			o.cleanupWorktree(worktreePath, branchName)
 			o.state.Attempts = append(o.state.Attempts, PageAttempt{

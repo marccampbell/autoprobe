@@ -624,17 +624,50 @@ func truncateURLMiddle(url string, maxLen int) string {
 	return url[:maxLen/2] + "..." + url[len(url)-maxLen/2+3:]
 }
 
+// normalizeConsoleError extracts the core error message, stripping component stacks and variable parts
+func normalizeConsoleError(err string) string {
+	// For React validateDOMNesting warnings, extract the core message
+	// "Warning: validateDOMNesting(...): <div> cannot appear as a descendant of <p>. ..."
+	if strings.Contains(err, "validateDOMNesting") {
+		// Find the core pattern: "<X> cannot appear as a descendant of <Y>"
+		if idx := strings.Index(err, "cannot appear as a descendant of"); idx > 0 {
+			// Find the start of the element name
+			start := strings.LastIndex(err[:idx], "<")
+			if start > 0 {
+				// Find the end after "descendant of <Y>"
+				afterIdx := idx + len("cannot appear as a descendant of ")
+				end := strings.Index(err[afterIdx:], ">")
+				if end > 0 {
+					return err[start : afterIdx+end+1]
+				}
+			}
+		}
+	}
+	
+	// For other errors, take first 80 chars as the "signature"
+	// This handles cases where the same error has different stack traces
+	normalized := err
+	if len(normalized) > 80 {
+		normalized = normalized[:80]
+	}
+	return normalized
+}
+
 // FindNewConsoleErrors returns errors in after that weren't in before
+// Uses normalized comparison to handle slight variations in stack traces
 func FindNewConsoleErrors(before, after *PageStats) []string {
 	beforeSet := make(map[string]bool)
 	for _, e := range before.ConsoleErrors {
-		beforeSet[e] = true
+		beforeSet[normalizeConsoleError(e)] = true
 	}
 	
 	var newErrors []string
+	seen := make(map[string]bool) // Dedupe new errors too
 	for _, e := range after.ConsoleErrors {
-		if !beforeSet[e] {
+		normalized := normalizeConsoleError(e)
+		if !beforeSet[normalized] && !seen[normalized] {
 			newErrors = append(newErrors, e)
+			seen[normalized] = true
 		}
 	}
 	return newErrors
