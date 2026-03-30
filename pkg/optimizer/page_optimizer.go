@@ -392,17 +392,62 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 func (o *PageOptimizer) gatherCodeContext(slowRequests []pagebench.RequestInfo) string {
 	var ctx strings.Builder
 
-	// Project structure
+	// Extract the page path from URL for route tracing
+	pagePath := extractPagePath(o.page.URL)
+	ctx.WriteString(fmt.Sprintf("## Target Page\nURL: %s\nPath: %s\n\n", o.page.URL, pagePath))
+
+	// Try to find the route definition
+	ctx.WriteString("## Route Configuration\n")
+	routePatterns := []string{"routes", "router", "Route.*path"}
+	for _, pattern := range routePatterns {
+		result := tools.ExecuteTool(tools.ToolUse{
+			Name: "grep",
+			Input: map[string]interface{}{
+				"pattern": pattern,
+				"include": "*.tsx,*.ts,*.jsx,*.js",
+			},
+		})
+		if !result.IsError && result.Content != "No matches found" {
+			// Look for the specific page path in routes
+			lines := strings.Split(result.Content, "\n")
+			for _, line := range lines {
+				if strings.Contains(line, pagePath) || strings.Contains(line, "channels") {
+					ctx.WriteString(line + "\n")
+				}
+			}
+		}
+	}
+	ctx.WriteString("\n")
+
+	// Project structure (abbreviated)
 	result := tools.ExecuteTool(tools.ToolUse{
 		Name:  "list_files",
-		Input: map[string]interface{}{"path": "."},
+		Input: map[string]interface{}{"path": "src"},
 	})
+	if result.IsError {
+		// Try common alternatives
+		result = tools.ExecuteTool(tools.ToolUse{
+			Name:  "list_files",
+			Input: map[string]interface{}{"path": "."},
+		})
+	}
 	ctx.WriteString("## Project Structure\n```\n")
-	ctx.WriteString(result.Content)
+	// Truncate to first 100 lines
+	lines := strings.Split(result.Content, "\n")
+	if len(lines) > 100 {
+		lines = lines[:100]
+		ctx.WriteString(strings.Join(lines, "\n"))
+		ctx.WriteString("\n... (truncated)\n")
+	} else {
+		ctx.WriteString(result.Content)
+	}
 	ctx.WriteString("\n```\n\n")
 
-	// Grep for API paths
+	// Grep for API paths - but note which files reference them
+	ctx.WriteString("## Files Making API Calls\n")
 	seenPaths := make(map[string]bool)
+	apiFileMap := make(map[string][]string) // file -> API paths it calls
+	
 	for _, req := range slowRequests {
 		path := extractAPIPath(req.URL)
 		if path == "" || seenPaths[path] {
@@ -419,31 +464,80 @@ func (o *PageOptimizer) gatherCodeContext(slowRequests []pagebench.RequestInfo) 
 		})
 
 		if !result.IsError && result.Content != "No matches found" {
-			content := result.Content
-			if len(content) > 3000 {
-				content = content[:3000] + "\n... (truncated)"
+			// Parse out file names
+			for _, line := range strings.Split(result.Content, "\n") {
+				if idx := strings.Index(line, ":"); idx > 0 {
+					file := line[:idx]
+					apiFileMap[file] = append(apiFileMap[file], path)
+				}
 			}
-			ctx.WriteString(fmt.Sprintf("## Code referencing %s\n```\n%s\n```\n\n", path, content))
 		}
 	}
+
+	// List files that make API calls
+	for file, paths := range apiFileMap {
+		ctx.WriteString(fmt.Sprintf("- %s calls: %s\n", file, strings.Join(paths, ", ")))
+	}
+	ctx.WriteString("\n")
 
 	return ctx.String()
 }
 
+// extractPagePath extracts the path portion from a URL for route matching
+func extractPagePath(url string) string {
+	// Find the path after the host
+	if idx := strings.Index(url, "://"); idx != -1 {
+		rest := url[idx+3:]
+		if pathIdx := strings.Index(rest, "/"); pathIdx != -1 {
+			path := rest[pathIdx:]
+			// Remove query string
+			if qIdx := strings.Index(path, "?"); qIdx != -1 {
+				path = path[:qIdx]
+			}
+			return path
+		}
+	}
+	return "/"
+}
+
 func (o *PageOptimizer) explore(codeContext string, slowRequests []pagebench.RequestInfo) (string, error) {
-	prompt := `You are a code explorer. You MUST use tools to investigate. Do not explain what you will do - just call the tools.
+	pagePath := extractPagePath(o.page.URL)
+	
+	prompt := fmt.Sprintf(`You are a code explorer finding performance issues. You MUST use tools to investigate.
 
 AVAILABLE TOOLS:
-- grep: {"pattern": "text", "include": "*.tsx"}
+- grep: {"pattern": "text", "include": "*.tsx"}  
 - read_file: {"path": "file.tsx"}
 - list_files: {"path": "directory"}
-- repo_browser.print_tree: {"path": "directory", "depth": 2}
 
-TASK: Find client-side code causing redundant XHR requests.
+TARGET PAGE: %s
 
-START IMMEDIATELY by calling grep or read_file. Do not output any text before using a tool.`
+YOUR TASK - FOLLOW THESE STEPS IN ORDER:
+
+1. TRACE THE ROUTE: Find the router config and identify which component renders for this URL path
+2. READ THE PAGE COMPONENT: Read the main component file for this page
+3. TRACE CHILD COMPONENTS: Identify what child components the page imports and renders
+4. FIND API CALLS: For each component in the render tree, find useQuery/fetch/axios calls
+5. IDENTIFY THE PROBLEM: Only flag duplicate/redundant calls if they're in components ACTUALLY RENDERED on this page
+
+CRITICAL: Do NOT assume a component causes issues just because it calls the same API. 
+You must VERIFY the component is actually imported and rendered by the page component tree.
+
+When you find the issue, output a summary like:
+COMPONENT TREE: PageComponent -> ChildA -> ChildB
+API CALLS FOUND:
+- ChildA calls /api/foo (line 23)
+- ChildB also calls /api/foo (line 45) <- DUPLICATE
+PROBLEM: Both components fetch the same data independently
+
+START by finding the route configuration for path "%s".`, pagePath, pagePath)
 
 	var userPrompt strings.Builder
+	
+	// Always start with the target page URL
+	userPrompt.WriteString(fmt.Sprintf("## TARGET PAGE\nURL: %s\nPath: %s\n\n", o.page.URL, pagePath))
+	userPrompt.WriteString("You MUST verify components are rendered on THIS page before flagging them as problems.\n\n")
+	
 	if len(o.state.Attempts) > 0 {
 		userPrompt.WriteString("## Previous Attempts (find something DIFFERENT)\n")
 		for _, a := range o.state.Attempts {
@@ -513,33 +607,44 @@ START IMMEDIATELY by calling grep or read_file. Do not output any text before us
 }
 
 func (o *PageOptimizer) generateHypothesis(findings string, slowRequests []pagebench.RequestInfo) (string, string, error) {
-	prompt := `Based on the exploration findings, propose ONE optimization.
+	pagePath := extractPagePath(o.page.URL)
+	
+	prompt := fmt.Sprintf(`Based on the exploration findings, propose ONE optimization for the page at path "%s".
+
+CRITICAL VALIDATION REQUIREMENTS:
+Before proposing any change, you MUST have verified:
+1. The component you want to modify is ACTUALLY RENDERED on this specific page
+2. You traced the import chain from the page component to the target component
+3. The API call you want to optimize is triggered when loading THIS page
+
+DO NOT propose changes to components that:
+- Are not imported by the page component tree
+- Only appear in grep results but aren't actually used on this page
+- Are used on OTHER pages but not this one
 
 LOOK FOR THESE PROBLEMS (in priority order):
-1. DUPLICATE REQUESTS: Same API called multiple times (check RedundantXHR list!)
-2. TOO MANY REQUESTS: Page makes many separate API calls that could be batched or combined
-3. UNNECESSARY REQUESTS: Data fetched but not used, or fetched too early
-4. RE-FETCH ON RENDER: useEffect deps or missing React Query staleTime causing refetches
+1. DUPLICATE REQUESTS: Same API called multiple times BY COMPONENTS ON THIS PAGE
+2. TOO MANY REQUESTS: This page makes many separate API calls that could be batched
+3. UNNECESSARY REQUESTS: Data fetched but not used on this page
+4. RE-FETCH ON RENDER: useEffect deps causing refetches on this page
 
 PRIORITIZE CLIENT-SIDE FIXES:
-- Remove duplicate API calls in components
+- Remove duplicate API calls in components rendered on this page
 - Batch multiple related requests into one
 - Fix useEffect dependencies to prevent re-fetches
 - Increase staleTime/cacheTime in React Query
 - Memoize components to prevent re-render fetches
 
-IF CLIENT-SIDE IS ALREADY GOOD, then consider:
-- Combining multiple API endpoints into one
-- Reducing API response payload size
-
-DO NOT suggest:
-- Database indexes or query changes
-
 Output JSON only:
-{"hypothesis": "what causes the problem", "change": "what code to modify"}
+{
+  "hypothesis": "what causes the problem",
+  "change": "what code to modify", 
+  "verified_components": ["list of components you verified are on this page"],
+  "evidence": "how you verified these components render on this page"
+}
 
-Or if no optimization found:
-{"done": true}`
+Or if no optimization found or cannot verify component is on this page:
+{"done": true, "reason": "why no optimization is possible"}`, pagePath)
 
 	var context strings.Builder
 	
@@ -580,16 +685,30 @@ Or if no optimization found:
 	}
 
 	var result struct {
-		Hypothesis string `json:"hypothesis"`
-		Change     string `json:"change"`
-		Done       bool   `json:"done"`
+		Hypothesis         string   `json:"hypothesis"`
+		Change             string   `json:"change"`
+		VerifiedComponents []string `json:"verified_components"`
+		Evidence           string   `json:"evidence"`
+		Done               bool     `json:"done"`
+		Reason             string   `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
 		return "", "", err
 	}
 
 	if result.Done {
+		if result.Reason != "" {
+			fmt.Printf(" no optimization: %s\n", result.Reason)
+		}
 		return "", "", nil
+	}
+
+	// Log verification info if verbose
+	if o.verbose && len(result.VerifiedComponents) > 0 {
+		fmt.Printf("\nVerified components: %s\n", strings.Join(result.VerifiedComponents, ", "))
+		if result.Evidence != "" {
+			fmt.Printf("Evidence: %s\n", result.Evidence)
+		}
 	}
 
 	return result.Hypothesis, result.Change, nil
