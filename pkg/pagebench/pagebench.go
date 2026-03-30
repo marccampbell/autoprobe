@@ -261,11 +261,12 @@ func Run(name string, page *config.PageConfig, verbose bool) (*PageStats, error)
 	
 	fullyLoaded := time.Since(pageStart)
 	
-	// Take screenshot for visual regression
+	// Take screenshot for visual regression (viewport only, not full page)
+	// Full page screenshots cause false positives when content height changes
 	screenshotPath := filepath.Join(os.TempDir(), fmt.Sprintf("autoprobe-screenshot-%d.png", time.Now().UnixNano()))
 	pg.Screenshot(playwright.PageScreenshotOptions{
 		Path:     playwright.String(screenshotPath),
-		FullPage: playwright.Bool(true),
+		FullPage: playwright.Bool(false),
 	})
 
 	// Calculate stats
