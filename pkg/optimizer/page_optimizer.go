@@ -376,11 +376,22 @@ START IMMEDIATELY by calling grep or read_file. Do not output any text before us
 		userPrompt.WriteString("\n")
 	}
 
-	userPrompt.WriteString("## Slow Requests\n")
+	userPrompt.WriteString("## Slowest Requests\n")
 	for _, req := range slowRequests {
 		userPrompt.WriteString(fmt.Sprintf("- %s %s (%s)\n", req.Method, req.URL, req.Duration.Round(time.Millisecond)))
 	}
 	userPrompt.WriteString("\n")
+
+	// Add ALL XHR requests so Claude sees the full picture
+	allXHR := o.getAllXHR(o.state.CurrentStats)
+	if len(allXHR) > len(slowRequests) {
+		userPrompt.WriteString(fmt.Sprintf("## All XHR Requests (%d total — high count is a problem!)\n", len(allXHR)))
+		for _, req := range allXHR {
+			userPrompt.WriteString(fmt.Sprintf("- %s %s (%s)\n", req.Method, req.URL, req.Duration.Round(time.Millisecond)))
+		}
+		userPrompt.WriteString("\n")
+	}
+
 	userPrompt.WriteString(codeContext)
 
 	availableTools := tools.GetTools(false)
@@ -412,11 +423,17 @@ START IMMEDIATELY by calling grep or read_file. Do not output any text before us
 func (o *PageOptimizer) generateHypothesis(findings string, slowRequests []pagebench.RequestInfo) (string, string, error) {
 	prompt := `Based on the exploration findings, propose ONE optimization.
 
-PRIORITIZE CLIENT-SIDE (try these first):
-- Remove duplicate API calls in components (check RedundantXHR list!)
+LOOK FOR THESE PROBLEMS (in priority order):
+1. DUPLICATE REQUESTS: Same API called multiple times (check RedundantXHR list!)
+2. TOO MANY REQUESTS: Page makes many separate API calls that could be batched or combined
+3. UNNECESSARY REQUESTS: Data fetched but not used, or fetched too early
+4. RE-FETCH ON RENDER: useEffect deps or missing React Query staleTime causing refetches
+
+PRIORITIZE CLIENT-SIDE FIXES:
+- Remove duplicate API calls in components
+- Batch multiple related requests into one
 - Fix useEffect dependencies to prevent re-fetches
 - Increase staleTime/cacheTime in React Query
-- Batch requests or add deduplication
 - Memoize components to prevent re-render fetches
 
 IF CLIENT-SIDE IS ALREADY GOOD, then consider:
@@ -446,10 +463,15 @@ Or if no optimization found:
 		context.WriteString("\n")
 	}
 	
-	context.WriteString(fmt.Sprintf("## Exploration Findings\n%s\n\n## Slow Requests\n", findings))
-	for _, req := range slowRequests {
+	// Add ALL XHR requests so Claude sees the full picture
+	allXHR := o.getAllXHR(o.state.CurrentStats)
+	context.WriteString(fmt.Sprintf("## All XHR Requests (%d total)\n", len(allXHR)))
+	for _, req := range allXHR {
 		context.WriteString(fmt.Sprintf("- %s %s (%s)\n", req.Method, req.URL, req.Duration.Round(time.Millisecond)))
 	}
+	context.WriteString("\n")
+
+	context.WriteString(fmt.Sprintf("## Exploration Findings\n%s\n", findings))
 
 	var response strings.Builder
 	err := o.client.Complete(prompt, context.String(), func(text string) {
@@ -736,6 +758,19 @@ func (o *PageOptimizer) commitChanges(message string) (string, error) {
 }
 
 func (o *PageOptimizer) getSlowestXHR(stats *pagebench.PageStats, n int) []pagebench.RequestInfo {
+	all := o.getAllXHR(stats)
+
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].Duration > all[j].Duration
+	})
+
+	if len(all) > n {
+		return all[:n]
+	}
+	return all
+}
+
+func (o *PageOptimizer) getAllXHR(stats *pagebench.PageStats) []pagebench.RequestInfo {
 	var xhrRequests []pagebench.RequestInfo
 	for _, req := range stats.Requests {
 		if req.ResourceType == "xhr" || req.ResourceType == "fetch" {
@@ -744,14 +779,6 @@ func (o *PageOptimizer) getSlowestXHR(stats *pagebench.PageStats, n int) []pageb
 			}
 			xhrRequests = append(xhrRequests, req)
 		}
-	}
-
-	sort.Slice(xhrRequests, func(i, j int) bool {
-		return xhrRequests[i].Duration > xhrRequests[j].Duration
-	})
-
-	if len(xhrRequests) > n {
-		return xhrRequests[:n]
 	}
 	return xhrRequests
 }
