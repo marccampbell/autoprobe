@@ -364,6 +364,18 @@ START IMMEDIATELY by calling grep or read_file. Do not output any text before us
 		userPrompt.WriteString("\n")
 	}
 
+	// Add redundant XHR info - this is critical low-hanging fruit
+	if len(o.state.CurrentStats.RedundantXHR) > 0 {
+		userPrompt.WriteString("## 🔴 REDUNDANT XHR (DUPLICATE REQUESTS - FIX THESE FIRST)\n")
+		for _, dup := range o.state.CurrentStats.RedundantXHR {
+			if pagebench.IsDevToolingURL(dup.URL) {
+				continue
+			}
+			userPrompt.WriteString(fmt.Sprintf("- %dx %s [%dms wasted]\n", dup.Count, dup.URL, dup.TotalTimeMs))
+		}
+		userPrompt.WriteString("\n")
+	}
+
 	userPrompt.WriteString("## Slow Requests\n")
 	for _, req := range slowRequests {
 		userPrompt.WriteString(fmt.Sprintf("- %s %s (%s)\n", req.Method, req.URL, req.Duration.Round(time.Millisecond)))
@@ -401,7 +413,7 @@ func (o *PageOptimizer) generateHypothesis(findings string, slowRequests []pageb
 	prompt := `Based on the exploration findings, propose ONE optimization.
 
 PRIORITIZE CLIENT-SIDE (try these first):
-- Remove duplicate API calls in components
+- Remove duplicate API calls in components (check RedundantXHR list!)
 - Fix useEffect dependencies to prevent re-fetches
 - Increase staleTime/cacheTime in React Query
 - Batch requests or add deduplication
@@ -420,13 +432,27 @@ Output JSON only:
 Or if no optimization found:
 {"done": true}`
 
-	context := fmt.Sprintf("## Exploration Findings\n%s\n\n## Slow Requests\n", findings)
+	var context strings.Builder
+	
+	// Add redundant XHR info prominently
+	if len(o.state.CurrentStats.RedundantXHR) > 0 {
+		context.WriteString("## 🔴 REDUNDANT XHR (DUPLICATE REQUESTS - FIX THESE FIRST)\n")
+		for _, dup := range o.state.CurrentStats.RedundantXHR {
+			if pagebench.IsDevToolingURL(dup.URL) {
+				continue
+			}
+			context.WriteString(fmt.Sprintf("- %dx %s [%dms wasted]\n", dup.Count, dup.URL, dup.TotalTimeMs))
+		}
+		context.WriteString("\n")
+	}
+	
+	context.WriteString(fmt.Sprintf("## Exploration Findings\n%s\n\n## Slow Requests\n", findings))
 	for _, req := range slowRequests {
-		context += fmt.Sprintf("- %s %s (%s)\n", req.Method, req.URL, req.Duration.Round(time.Millisecond))
+		context.WriteString(fmt.Sprintf("- %s %s (%s)\n", req.Method, req.URL, req.Duration.Round(time.Millisecond)))
 	}
 
 	var response strings.Builder
-	err := o.client.Complete(prompt, context, func(text string) {
+	err := o.client.Complete(prompt, context.String(), func(text string) {
 		response.WriteString(text)
 	})
 	if err != nil {

@@ -21,7 +21,7 @@ func AnalyzeEndpoint(cfg *config.Config, endpointName string, endpoint *config.E
 	userPrompt := buildUserPrompt(endpointName, endpoint, baseline, dryRun)
 	availableTools := tools.GetTools(!dryRun) // Allow writes only if not dry-run
 
-	return client.RunWithTools(systemPrompt, userPrompt, availableTools, nil)
+	return client.RunWithTools(systemPrompt, userPrompt, availableTools, nil, nil)
 }
 
 func buildSystemPrompt(cfg *config.Config, dryRun bool) string {
