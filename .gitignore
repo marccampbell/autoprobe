@@ -31,3 +31,8 @@ go.work.sum
 # .idea/
 # .vscode/
 bin/
+
+# Autoprobe debug state (saved in target repos, not this one)
+# Users should add these to their own repos:
+#   .autoprobe-state.json
+#   .autoprobe-screenshots/

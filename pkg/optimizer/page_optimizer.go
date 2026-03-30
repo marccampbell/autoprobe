@@ -235,6 +235,10 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 					fmt.Printf("    • %s\n", e)
 				}
 			}
+			// Save for replay
+			o.saveDiscardedAttempt(commitHash, hypothesis, change, changedFiles, 
+				fmt.Sprintf("new console errors (%d)", len(newErrors)),
+				o.state.CurrentStats.ScreenshotPath, afterStats.ScreenshotPath, newErrors)
 			o.revertCherryPick()
 			o.cleanupWorktree(worktreePath, branchName)
 			o.state.Attempts = append(o.state.Attempts, PageAttempt{
@@ -250,6 +254,10 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 		similarity, err := pagebench.CompareScreenshots(o.state.CurrentStats.ScreenshotPath, afterStats.ScreenshotPath)
 		if err == nil && similarity < 0.85 {
 			fmt.Printf("DISCARD ✗ — visual regression (%.0f%% similar, need 85%%+)\n", similarity*100)
+			// Save for replay
+			o.saveDiscardedAttempt(commitHash, hypothesis, change, changedFiles,
+				fmt.Sprintf("visual regression (%.0f%% similar)", similarity*100),
+				o.state.CurrentStats.ScreenshotPath, afterStats.ScreenshotPath, nil)
 			o.revertCherryPick()
 			o.cleanupWorktree(worktreePath, branchName)
 			o.state.Attempts = append(o.state.Attempts, PageAttempt{
@@ -291,6 +299,10 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 				sign = ""
 			}
 			fmt.Printf("DISCARD ✗ (%.0fms → %.0fms, %s%.0fms, %d → %d reqs)\n", beforeMs, afterMs, sign, diff, beforeCount, afterCount)
+			// Save for replay
+			o.saveDiscardedAttempt(commitHash, hypothesis, change, changedFiles,
+				fmt.Sprintf("no improvement (%.0fms → %.0fms)", beforeMs, afterMs),
+				o.state.CurrentStats.ScreenshotPath, afterStats.ScreenshotPath, nil)
 			o.revertCherryPick()
 			o.state.Attempts = append(o.state.Attempts, PageAttempt{
 				Hypothesis:   hypothesis,
@@ -892,4 +904,64 @@ func truncateURLMiddle(url string, maxLen int) string {
 		keepEnd = 20
 	}
 	return url[:keepStart] + "..." + url[len(url)-keepEnd:]
+}
+
+// saveDiscardedAttempt saves info about a discarded attempt for later replay
+func (o *PageOptimizer) saveDiscardedAttempt(commitHash, hypothesis, change string, filesChanged []string, reason, baselineScreenshot, afterScreenshot string, consoleErrors []string) {
+	// Copy screenshots to persistent location in repo
+	screenshotDir := filepath.Join(o.repoRoot, ".autoprobe-screenshots")
+	os.MkdirAll(screenshotDir, 0755)
+
+	baselineDst := ""
+	afterDst := ""
+
+	if baselineScreenshot != "" {
+		baselineDst = filepath.Join(screenshotDir, "baseline.png")
+		copyFile(baselineScreenshot, baselineDst)
+	}
+	if afterScreenshot != "" {
+		afterDst = filepath.Join(screenshotDir, "after.png")
+		copyFile(afterScreenshot, afterDst)
+	}
+
+	// Save state file
+	stateFile := filepath.Join(o.repoRoot, ".autoprobe-state.json")
+	state := map[string]interface{}{
+		"commitHash":         commitHash,
+		"hypothesis":         hypothesis,
+		"change":             change,
+		"filesChanged":       filesChanged,
+		"reason":             reason,
+		"screenshotPath":     afterDst,
+		"baselineScreenshot": baselineDst,
+		"consoleErrors":      consoleErrors,
+	}
+
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return
+	}
+
+	os.WriteFile(stateFile, data, 0644)
+
+	// Print where screenshots are saved
+	if baselineDst != "" || afterDst != "" {
+		fmt.Printf("\nScreenshots saved:\n")
+		if baselineDst != "" {
+			fmt.Printf("  Baseline: %s\n", baselineDst)
+		}
+		if afterDst != "" {
+			fmt.Printf("  After:    %s\n", afterDst)
+		}
+		fmt.Println()
+		fmt.Println("To inspect this change: autoprobe replay")
+	}
+}
+
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0644)
 }
