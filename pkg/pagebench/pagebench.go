@@ -698,19 +698,34 @@ func CompareScreenshots(path1, path2 string) (float64, error) {
 	bounds1 := img1.Bounds()
 	bounds2 := img2.Bounds()
 	
-	// If sizes are very different, low similarity
-	if bounds1.Dx() != bounds2.Dx() || bounds1.Dy() != bounds2.Dy() {
-		return 0.5, nil // Different sizes, assume some similarity
+	// Handle size differences by comparing the overlapping region
+	// This handles cases where page height changes slightly (scrollbar, content loading)
+	width := bounds1.Dx()
+	height := bounds1.Dy()
+	
+	// Use the smaller dimensions if sizes differ
+	if bounds2.Dx() < width {
+		width = bounds2.Dx()
+	}
+	if bounds2.Dy() < height {
+		height = bounds2.Dy()
 	}
 	
-	// Compare pixels with tolerance
-	totalPixels := bounds1.Dx() * bounds1.Dy()
+	// If one dimension is dramatically different (>50% size change), that's a real problem
+	widthRatio := float64(width) / float64(max(bounds1.Dx(), bounds2.Dx()))
+	heightRatio := float64(height) / float64(max(bounds1.Dy(), bounds2.Dy()))
+	if widthRatio < 0.5 || heightRatio < 0.5 {
+		return 0.3, nil // Major size difference, likely a real regression
+	}
+	
+	// Compare pixels in the overlapping region with tolerance
+	totalPixels := width * height
 	matchingPixels := 0
 	
-	for y := bounds1.Min.Y; y < bounds1.Max.Y; y++ {
-		for x := bounds1.Min.X; x < bounds1.Max.X; x++ {
-			r1, g1, b1, _ := img1.At(x, y).RGBA()
-			r2, g2, b2, _ := img2.At(x, y).RGBA()
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			r1, g1, b1, _ := img1.At(bounds1.Min.X+x, bounds1.Min.Y+y).RGBA()
+			r2, g2, b2, _ := img2.At(bounds2.Min.X+x, bounds2.Min.Y+y).RGBA()
 			
 			// Allow some tolerance (shift by 8 to get 0-255 range)
 			tolerance := uint32(10 << 8)
@@ -720,7 +735,22 @@ func CompareScreenshots(path1, path2 string) (float64, error) {
 		}
 	}
 	
-	return float64(matchingPixels) / float64(totalPixels), nil
+	similarity := float64(matchingPixels) / float64(totalPixels)
+	
+	// Penalize slightly for size differences (but not as harshly as before)
+	sizePenalty := (widthRatio + heightRatio) / 2
+	if sizePenalty < 1.0 {
+		similarity = similarity * (0.8 + 0.2*sizePenalty) // Small penalty for size diff
+	}
+	
+	return similarity, nil
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func abs(a, b uint32) uint32 {

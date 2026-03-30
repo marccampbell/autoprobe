@@ -250,8 +250,8 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 						break
 					}
 
-					// Commit the fix
-					newCommitHash, newChangedFiles, err := o.commitWorktreeChanges(worktreePath)
+					// Amend the previous commit instead of creating a new one (avoids cherry-pick conflicts)
+					newCommitHash, newChangedFiles, err := o.amendWorktreeCommit(worktreePath)
 					if err != nil || len(newChangedFiles) == 0 {
 						fmt.Println("  No fix changes made")
 						discardReason = fmt.Sprintf("new console errors (%d), no fix made", len(newErrors))
@@ -292,8 +292,8 @@ func (o *PageOptimizer) Run(maxIterations int) error {
 						break
 					}
 
-					// Commit the fix
-					newCommitHash, newChangedFiles, err := o.commitWorktreeChanges(worktreePath)
+					// Amend the previous commit instead of creating a new one (avoids cherry-pick conflicts)
+					newCommitHash, newChangedFiles, err := o.amendWorktreeCommit(worktreePath)
 					if err != nil || len(newChangedFiles) == 0 {
 						fmt.Println("  No fix changes made")
 						discardReason = fmt.Sprintf("visual regression (%.0f%% similar), no fix made", similarity*100)
@@ -915,6 +915,58 @@ func (o *PageOptimizer) commitWorktreeChanges(worktreePath string) (string, []st
 	}
 
 	cmd = exec.Command("git", "commit", "-m", "autoprobe: optimization attempt")
+	cmd.Dir = worktreePath
+	if err := cmd.Run(); err != nil {
+		return "", nil, err
+	}
+
+	cmd = exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = worktreePath
+	output, err = cmd.Output()
+	if err != nil {
+		return "", nil, err
+	}
+
+	return strings.TrimSpace(string(output)), files, nil
+}
+
+// amendWorktreeCommit amends the last commit in the worktree with new changes
+// This is used for fix attempts to avoid cherry-pick conflicts
+func (o *PageOptimizer) amendWorktreeCommit(worktreePath string) (string, []string, error) {
+	cmd := exec.Command("git", "add", "-A")
+	cmd.Dir = worktreePath
+	if err := cmd.Run(); err != nil {
+		return "", nil, err
+	}
+
+	// Check if there are any changes to amend
+	cmd = exec.Command("git", "diff", "--cached", "--name-only")
+	cmd.Dir = worktreePath
+	output, err := cmd.Output()
+	if err != nil {
+		return "", nil, err
+	}
+
+	var files []string
+	for _, f := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+
+	if len(files) == 0 {
+		// No new changes, just return the current commit hash
+		cmd = exec.Command("git", "rev-parse", "HEAD")
+		cmd.Dir = worktreePath
+		output, err = cmd.Output()
+		if err != nil {
+			return "", nil, err
+		}
+		return strings.TrimSpace(string(output)), nil, nil
+	}
+
+	// Amend the last commit
+	cmd = exec.Command("git", "commit", "--amend", "--no-edit")
 	cmd.Dir = worktreePath
 	if err := cmd.Run(); err != nil {
 		return "", nil, err
